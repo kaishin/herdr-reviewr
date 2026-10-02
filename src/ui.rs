@@ -2848,6 +2848,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             // Short, so `esc cancel` fits a 40-column row.
             return (hint(K::QuitDiscard), format!("quit ({} pending)", app.unsent()));
         }
+        A::Clear => (hint(K::Clear), "clear"),
         A::Save => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),

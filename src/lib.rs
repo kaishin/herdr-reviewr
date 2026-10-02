@@ -22,6 +22,7 @@ pub mod log;
 pub mod markdown;
 pub(crate) mod marks;
 pub mod model;
+pub mod persist;
 pub mod proc;
 pub(crate) mod rendered;
 pub mod roles;
@@ -1865,6 +1866,7 @@ fn dispatch_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> Re
             (Some(K::PageUp), _) => app.pr_scroll_read(-PAGE),
             (Some(K::Expand), _) => app.expand_pr_details(),
             (Some(K::Collapse), _) => app.collapse_pr_details(),
+            (Some(K::Clear), _) => app.clear_comments(),
             _ => {}
         }
         return Ok(());
@@ -1880,6 +1882,7 @@ fn dispatch_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> Re
             (Some(K::Copy), _) => {
                 app.export(&Clipboard);
             }
+            (Some(K::Clear), _) => app.clear_comments(),
             (Some(K::Edit), _) => app.start_edit(),
             (Some(K::Delete), _) => app.delete_comment(),
             _ => {}
@@ -1938,6 +1941,7 @@ fn dispatch_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> Re
             K::Copy => {
                 app.export(&Clipboard);
             }
+            K::Clear => app.clear_comments(),
             K::NextComment => app.jump_comment(1),
             K::PrevComment => app.jump_comment(-1),
             K::Comments => app.open_list(),

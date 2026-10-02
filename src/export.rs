@@ -1,4 +1,4 @@
-//! Comments formatted as `location`, snippet, text, and exported; the caller consumes on `Ok`.
+//! Export consumes the live comments on success, leaving their branch-and-cwd JSON file in place.
 
 use anyhow::Result;
 

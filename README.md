@@ -286,6 +286,7 @@ keys help non-Latin layouts: bind the character your layout types on the same ke
 | `keys` | `?` |
 | `send` | `s`, `S` |
 | `copy` | `y`, `Y` |
+| `clear` | `X` |
 | `open-pr` | `o` |
 | `refresh` | `r` |
 | `quit` | `q` |
@@ -330,7 +331,8 @@ On Windows, point it at the plugin's own `bin` folder.
   history. Each comment list shows its newest 100.
 - **A background pane** catches up 30 seconds after a change, or at once when shown.
 - **A rename can pair with the wrong file** until you press `r`.
-- **Comments live only in the pane.** Closing it loses unsent ones. Send delivers all or none.
+- **Comments persist per branch and directory** as JSON in reviewr's cache. Reopening restores
+  them. Send and copy clear the live list but keep the file; only `clear` deletes it.
 - **Comments don't follow moved code.** reviewr marks them stale instead of dropping them.
 - **Files over 2 MB or 50,000 lines** aren't diffed. Neither are binary files.
 

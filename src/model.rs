@@ -1,4 +1,4 @@
-//! The review model: scopes, changed files, and the session's comments, never lost to a refresh.
+//! The review model: scopes, changed files, and comments backed by a branch-and-cwd JSON file.
 
 /// Which set of changes the Changes view shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -153,7 +153,7 @@ impl Comment {
     }
 }
 
-/// The session's comments, each with an id never reused, so a reference never lands on another.
+/// The live comments, each with an id never reused, backed by the branch-and-cwd JSON file.
 #[derive(Default, Debug)]
 pub struct CommentStore {
     items: Vec<Comment>,
