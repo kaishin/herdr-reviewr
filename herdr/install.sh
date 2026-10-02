@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# herdr `[[build]]` step: build herdr-reviewr from this checkout into bin/herdr-reviewr.
-# Runs on `herdr plugin install` (a managed checkout). `herdr plugin link` skips the build
-# step — for a local checkout, build with `just install`.
-#
-# The build runs with the plugin checkout as the working directory, so we resolve the plugin root
-# from this script's location rather than $HERDR_PLUGIN_ROOT (build commands may not receive the
-# runtime env). At runtime the pane command reads $HERDR_PLUGIN_ROOT/bin/herdr-reviewr.
+# Install builds this checkout into bin/; `plugin link` skips it, so use `just install`.
 set -euo pipefail
 
 NAME="herdr-reviewr"
@@ -35,9 +29,9 @@ LINK_ROOT="${HERDR_PLUGIN_ROOT:-$ROOT}"
 link_binary() {
   if mkdir -p "$1" 2>/dev/null && { [ -L "$1/$NAME" ] || [ ! -e "$1/$NAME" ]; } &&
     ln -sfn "$LINK_ROOT/bin/$NAME" "$1/$NAME" 2>/dev/null; then
-    echo "$SAY: linked $1/$NAME"
+    echo "$NAME: linked $1/$NAME"
   else
-    echo "$SAY: warning: could not link $1/$NAME" >&2
+    echo "$NAME: warning: could not link $1/$NAME" >&2
   fi
 }
 link_binary "$HOME/.local/state/herdr/plugins/persiyanov.reviewr/bin"

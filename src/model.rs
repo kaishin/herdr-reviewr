@@ -210,7 +210,7 @@ impl CommentStore {
         }
     }
 
-    /// Remove and return the comment at `index` (delete, or consume one on export).
+    /// Remove and return the comment at `index` (`d` on one comment).
     pub fn take(&mut self, index: usize) -> Option<Comment> {
         if index < self.items.len() {
             self.ids.remove(index);
@@ -220,7 +220,7 @@ impl CommentStore {
         }
     }
 
-    /// Remove and return every comment (consume-all on a successful export).
+    /// Remove and return every comment. Clear uses this; send and copy do not.
     pub fn take_all(&mut self) -> Vec<Comment> {
         self.ids.clear();
         std::mem::take(&mut self.items)

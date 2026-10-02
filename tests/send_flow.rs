@@ -244,9 +244,10 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
     agents(&fake_dir, ONE_AGENT);
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     assert_eq!(app.mode, Mode::Normal, "one agent sends directly");
-    assert!(app.store.is_empty(), "a successful send consumes the whole set");
+    assert_eq!(app.store.len(), 1, "a successful send leaves the review");
     assert_eq!(app.status, "sent 1 comment to claude");
     assert_eq!(app.last_sent_pane.as_deref(), Some("w8:p1"));
+    app.clear_comments();
 
     // An agent at a prompt takes no send, read at the send itself.
     agents(&fake_dir, TWO_AGENTS);
@@ -261,13 +262,13 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
     assert_eq!(app.status, "answer codex's prompt first");
     assert_eq!(socket.sends_to("w8:p2"), sends, "nothing was pasted");
 
-    // `enter` sends to the digit-picked agent mid-turn, and consumes the set.
+    // `enter` sends to the digit-picked agent mid-turn, and leaves the review.
     agents(&fake_dir, TWO_AGENTS);
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     press(&mut app, KeyCode::Char('2'), area, &keymap);
     press(&mut app, KeyCode::Enter, area, &keymap);
     assert_eq!(app.mode, Mode::Normal);
-    assert!(app.store.is_empty(), "a successful send consumes the whole set");
+    assert_eq!(app.store.len(), 1, "a successful send leaves the review");
     assert_eq!(app.status, "sent 1 comment to codex");
     assert_eq!(app.last_sent_pane.as_deref(), Some("w8:p2"));
     // The whole request herdr received.
@@ -278,6 +279,7 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
         )
     );
     assert!(herdr_calls(&fake_dir).contains("agent focus w8:p2"), "a send focuses its pane");
+    app.clear_comments();
 
     // The last-sent agent outranks the first row and sends on one click.
     write_comment(&mut app, "three");
@@ -303,7 +305,8 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
     )
     .unwrap();
     assert_eq!(app.mode, Mode::Normal, "a first click on the armed row sends");
-    assert!(app.store.is_empty());
+    assert_eq!(app.store.len(), 1, "the armed-row click leaves the review");
+    app.clear_comments();
     assert_eq!(
         socket.sends_to("w8:p2"),
         2,
@@ -365,16 +368,18 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
         assert!(app.confirming_quit && !app.should_quit, "unsent comments make `q` ask: {tab}");
         press(&mut app, KeyCode::Char('s'), area, &keymap);
         assert!(!app.confirming_quit && !app.should_quit, "{tab}");
-        assert!(app.store.is_empty(), "the answer sent them: {tab}");
+        assert_eq!(app.store.len(), 1, "the answer leaves the review: {tab}");
         assert_eq!(app.status, "sent 1 comment to claude", "{tab}");
+        app.clear_comments();
     }
 }
 
-/// Comments leave only on a `result` reply.
+/// Only a `result` reply reports success, and comments stay either way.
 #[test]
-fn a_send_consumes_the_comments_only_on_a_result_reply() {
+fn a_send_succeeds_only_on_a_result_reply_and_keeps_the_comments() {
     if !in_child() {
-        let dir = run_in_child("a_send_consumes_the_comments_only_on_a_result_reply", true);
+        let dir =
+            run_in_child("a_send_succeeds_only_on_a_result_reply_and_keeps_the_comments", true);
         assert!(herdr_calls(dir.path()).contains("agent focus"), "the child delivered no send");
         return;
     }
@@ -407,7 +412,7 @@ fn a_send_consumes_the_comments_only_on_a_result_reply() {
     socket.reply(Reply::Result);
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     assert_eq!(socket.requests().last(), Some(&request));
-    assert!(app.store.is_empty(), "a result reply consumes the whole set");
+    assert_eq!(app.store.len(), 1, "a result reply leaves the review");
     assert_eq!(app.status, "sent 1 comment to claude");
 }
 
@@ -429,7 +434,7 @@ fn a_long_review_sends_whole_and_one_over_the_cap_refuses() {
     let long = "x".repeat(250 * 1024);
     write_comment(&mut app, &long);
     press(&mut app, KeyCode::Char('s'), area, &keymap);
-    assert!(app.store.is_empty(), "a review just under the cap sends");
+    assert_eq!(app.store.len(), 1, "a review just under the cap stays after sending");
     assert_eq!(app.status, "sent 1 comment to claude");
     assert_eq!(
         socket.requests().last().unwrap(),
@@ -437,6 +442,8 @@ fn a_long_review_sends_whole_and_one_over_the_cap_refuses() {
             r#"{{"id":"reviewr:send","method":"pane.send_text","params":{{"pane_id":"w8:p1","text":"\u001b[200~a.rs:2{NL}+beta{NL}{long}\u001b[201~"}}}}"#
         )
     );
+
+    app.clear_comments();
 
     // The cap counts JSON escaping: each `"` is two bytes.
     for review in ["x".repeat(300 * 1024), "\"".repeat(150 * 1024)] {

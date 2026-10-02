@@ -1,4 +1,4 @@
-//! Export consumes the live comments on success, leaving their branch-and-cwd JSON file in place.
+//! Export leaves the live comments and their branch-and-cwd JSON file in place.
 
 use anyhow::Result;
 

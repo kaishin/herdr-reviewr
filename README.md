@@ -332,7 +332,7 @@ On Windows, point it at the plugin's own `bin` folder.
 - **A background pane** catches up 30 seconds after a change, or at once when shown.
 - **A rename can pair with the wrong file** until you press `r`.
 - **Comments persist per branch and directory** as JSON in reviewr's cache. Reopening restores
-  them. Send and copy clear the live list but keep the file; only `clear` deletes it.
+  them. Send and copy leave the review and file in place; only `clear` removes them.
 - **Comments don't follow moved code.** reviewr marks them stale instead of dropping them.
 - **Files over 2 MB or 50,000 lines** aren't diffed. Neither are binary files.
 

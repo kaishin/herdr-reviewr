@@ -1,8 +1,4 @@
-//! Branch-and-cwd comment files.
-//!
-//! Comments are JSON on disk for one worktree and one checked-out branch. Send and copy
-//! leave the file in place; only `clear` deletes it. A missing file, a detached `HEAD`,
-//! or a file this version cannot read restores nothing.
+//! Branch-and-cwd JSON comments survive send and copy; only `clear` deletes the file.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,19 +27,21 @@ fn comments_dir() -> PathBuf {
 }
 
 fn key(repo: &Path, branch: &str) -> String {
-    format!("{:016x}", hash(&(canonical(repo), branch)))
+    format!("{:016x}", hash(&(repo.to_path_buf(), canonical(repo), branch)))
 }
 
 fn canonical(repo: &Path) -> PathBuf {
     repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf())
 }
 
-/// FNV-1a over the canonical cwd and the branch name. Stable across restarts, and
-/// distinct for the same branch in two worktrees.
-fn hash(input: &(PathBuf, &str)) -> u64 {
+/// FNV-1a over the checkout path, its canonical path, and the branch name. The unresolved
+/// path keeps two temp checkouts apart when they canonicalize to the same directory.
+fn hash(input: &(PathBuf, PathBuf, &str)) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in input.0.to_string_lossy().as_bytes().iter().chain(input.1.as_bytes()) {
-        hash ^= u64::from(*byte);
+    let unresolved = input.0.to_string_lossy().into_owned();
+    let resolved = input.1.to_string_lossy().into_owned();
+    for byte in unresolved.bytes().chain(resolved.bytes()).chain(input.2.bytes()) {
+        hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     hash
@@ -212,8 +210,15 @@ mod tests {
     fn hash_changes_when_the_cwd_or_branch_changes() {
         let repo = Path::new("/work/reviewr");
         let cwd = canonical(repo);
-        assert_ne!(hash(&(cwd.clone(), "main")), hash(&(cwd.clone(), "topic")));
-        assert_ne!(hash(&(cwd, "main")), hash(&(canonical(Path::new("/work/other")), "main")));
+        let other = Path::new("/work/other").to_path_buf();
+        assert_ne!(
+            hash(&(repo.to_path_buf(), cwd.clone(), "main")),
+            hash(&(repo.to_path_buf(), cwd.clone(), "topic"))
+        );
+        assert_ne!(
+            hash(&(repo.to_path_buf(), cwd, "main")),
+            hash(&(other.clone(), canonical(&other), "main"))
+        );
     }
 
     fn git(repo: &Path, args: &[&str]) {
