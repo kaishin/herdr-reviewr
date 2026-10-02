@@ -1,9 +1,8 @@
 //! Formatting comments and exporting them to the agent or clipboard.
 //!
 //! A comment becomes a block of `location`, the
-//! diff snippet, then the text. Export is consume-on-success for the live list: the
-//! caller removes a comment only after `export` returns `Ok`. The branch-and-cwd JSON
-//! file is not that list — send and copy leave it in place.
+//! diff snippet, then the text. A successful export leaves the live list and the
+//! branch-and-cwd JSON file in place. Only an explicit clear removes them.
 
 use std::io::Write;
 use std::process::Stdio;
@@ -126,8 +125,8 @@ impl ExportTarget for Agent {
         "agent"
     }
 
-    /// Names the agent it addressed. The send is irreversible and consumes the whole set, so
-    /// this line is the reviewer's only record of where the review went.
+    /// Names the agent it addressed. The comments stay in the review, so this line is the
+    /// record of where the copy went.
     fn success_message(&self, count: usize) -> String {
         format!("added {} to {}", counted_comments(count), self.name)
     }
@@ -142,7 +141,7 @@ impl ExportTarget for Agent {
     fn export(&self, text: &str) -> Result<()> {
         herdr::send_text(&self.pane, text)?;
         // Focus is a convenience once the text is delivered; a focus failure must NOT fail the
-        // export, or the comments stay unconsumed and the next Send duplicates the whole review.
+        // export. The comments stay either way; a failed focus must not report a failed send.
         let _ = herdr::focus(&self.pane);
         Ok(())
     }

@@ -464,9 +464,10 @@ The known constraints:
 **Review model**
 - **Comments persist per branch and directory** — they are JSON in reviewr's cache,
   one file for this checkout and the checked-out branch. Reopening that pair restores
-  them. Send and copy leave the file in place; `clear` is the only command that deletes it.
-- **Sending is all-or-nothing** — Send (or copy) delivers the whole live set and clears
-  that list. A failure leaves everything in place. The JSON file stays until `clear`.
+  them. Send and copy leave the comments in the review and in the file; `clear` is
+  the only command that removes them.
+- **Sending is all-or-nothing** — Send (or copy) delivers the whole set and leaves it
+  in place. A failure leaves everything in place too. `clear` removes the review.
 - **No line-number rebasing** — a comment stays locatable by its diff snippet, not its line
   number. reviewr flags a stale comment instead of dropping it.
 

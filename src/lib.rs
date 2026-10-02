@@ -1743,7 +1743,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> 
     // review while the picker is up. It is checked before the tab handlers,
     // like every other modal, so no tab can ever eat the modal's keys.
     if app.mode == Mode::Picker {
-        // The send is irreversible and consumes every comment, so only the bare key fires it:
+        // The send delivers every comment, so only the bare key fires it:
         // `alt+enter` and `shift+enter` mean "newline, not submit" in the comment editor the
         // reviewer was in moments ago, and that muscle memory must not send a review. The digits
         // are literal here, whatever `tab-changes` and its siblings are bound to, so a chord

@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.40.0] — 2026-10-02
+
+### Added
+- **Comments persist for the checkout and branch.** They are JSON in reviewr's cache and come back when that pair reopens.
+- **`clear` (`X`) removes the review** and deletes its JSON file.
+
+### Changed
+- **Send and copy leave the comments in the review.** They no longer clear the list or the file.
+- **`herdr plugin install` builds this checkout from source.** This fork publishes no release binaries.
+
 ## [0.39.0] — 2026-09-23
 
 ### Added

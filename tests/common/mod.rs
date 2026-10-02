@@ -25,6 +25,10 @@ impl Repo {
         // global config. Pin it locally to a name no test creates, so the suite never
         // depends on the machine it runs on.
         repo.git(&["config", "init.defaultBranch", "no-such-default"]);
+        // A previous app on a recycled temp path may have saved comments for this branch.
+        if let Ok(Some(path)) = herdr_reviewr::persist::path_for(repo.path()) {
+            let _ = std::fs::remove_file(path);
+        }
         repo
     }
 
@@ -151,6 +155,11 @@ fn legacy_worktree_key(repo: &Path) -> String {
 }
 
 pub fn app_on(repo: &Repo) -> App {
+    // A prior app on this fixture saved its comments. A new review starts empty unless a
+    // test reopens the same path on purpose.
+    if let Ok(Some(path)) = herdr_reviewr::persist::path_for(repo.path()) {
+        let _ = std::fs::remove_file(path);
+    }
     let mut app = App::new(repo.path_buf(), Scope::Uncommitted, None);
     app.reload().unwrap();
     app

@@ -157,19 +157,19 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
     fs::write(fake_dir.join("agents.json"), ONE_AGENT).unwrap();
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     assert_eq!(app.mode, Mode::Normal, "one agent sends directly");
-    assert!(app.store.is_empty(), "a successful send consumes the whole set");
+    assert_eq!(app.store.len(), 1, "a successful send leaves the review");
     assert_eq!(app.status, "added 1 comment to claude");
     assert_eq!(app.last_sent_pane.as_deref(), Some("w8:p1"));
 
-    // `enter` sends to the digit-selected agent and consumes the set.
+    // `enter` sends to the digit-selected agent and leaves the review.
     fs::write(fake_dir.join("agents.json"), TWO_AGENTS).unwrap();
     write_comment(&mut app, "two");
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     press(&mut app, KeyCode::Char('2'), area, &keymap);
     press(&mut app, KeyCode::Enter, area, &keymap);
     assert_eq!(app.mode, Mode::Normal);
-    assert!(app.store.is_empty(), "a successful send consumes the whole set");
-    assert_eq!(app.status, "added 1 comment to codex");
+    assert_eq!(app.store.len(), 2, "a successful send leaves the review");
+    assert_eq!(app.status, "added 2 comments to codex");
     assert_eq!(app.last_sent_pane.as_deref(), Some("w8:p2"));
     assert!(log(&fake_dir).contains("pane send-text w8:p2"), "log: {}", log(&fake_dir));
     // The start marker opens the payload at the CLI boundary; `pasted()` owns the rationale.
@@ -212,7 +212,7 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
     )
     .unwrap();
     assert_eq!(app.mode, Mode::Normal, "a first click on the armed row sends");
-    assert!(app.store.is_empty());
+    assert_eq!(app.store.len(), 3, "the armed-row click leaves the review");
     let sends = log(&fake_dir).matches("pane send-text w8:p2").count();
     assert_eq!(
         sends,
@@ -227,13 +227,13 @@ fn send_dispatches_one_agent_directly_and_several_through_the_picker() {
     write_comment(&mut app, "four");
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     assert_eq!(app.mode, Mode::Normal, "an empty workspace opens no picker");
-    assert_eq!(app.store.len(), 1, "a refusal keeps every comment");
+    assert_eq!(app.store.len(), 4, "a refusal keeps every comment");
     assert_eq!(app.status, "no agent here — copy to the clipboard instead");
 
     fail_on(&fake_dir, "agent list");
     press(&mut app, KeyCode::Char('s'), area, &keymap);
     assert_eq!(app.mode, Mode::Normal, "a failed enumeration opens no picker");
-    assert_eq!(app.store.len(), 1, "a refusal keeps every comment");
+    assert_eq!(app.store.len(), 4, "a refusal keeps every comment");
     // A failed enumeration says so rather than claiming a count. The argv and herdr's stderr go
     // to the log, so the sentence still fits a 40-column footer.
     assert_eq!(app.status, "herdr did not answer — copy to the clipboard instead");

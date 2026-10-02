@@ -1,8 +1,8 @@
 //! In-memory review model: scopes, changed files, and comments.
 //!
-//! Comments are also written to a branch-and-cwd JSON file. Export removes them from
-//! the live list but leaves that file; only an explicit clear deletes it. A refresh
-//! never removes a comment.
+//! Comments are also written to a branch-and-cwd JSON file. Send and copy leave both
+//! the live list and that file; only an explicit clear removes them. A refresh never
+//! removes a comment.
 
 /// Which set of changes the Changes view shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -196,12 +196,12 @@ impl CommentStore {
         }
     }
 
-    /// Remove and return the comment at `index` (delete, or consume one on export).
+    /// Remove and return the comment at `index` (`d` on one comment).
     pub fn take(&mut self, index: usize) -> Option<Comment> {
         if index < self.items.len() { Some(self.items.remove(index)) } else { None }
     }
 
-    /// Remove and return every comment (consume-all on a successful export).
+    /// Remove and return every comment. Clear uses this; send and copy do not.
     pub fn take_all(&mut self) -> Vec<Comment> {
         std::mem::take(&mut self.items)
     }

@@ -4920,9 +4920,8 @@ impl App {
         }
     }
 
-    /// Send/copy every written comment to `target`; consume the live list only on
-    /// success. A failed export leaves all comments in place. Neither outcome deletes
-    /// the branch-and-cwd JSON file.
+    /// Send/copy every written comment to `target`. Delivery does not remove them from
+    /// the live list or the JSON file. Only [`Self::clear_comments`] does that.
     /// Reports whether the comments were delivered.
     pub fn export(&mut self, target: &dyn ExportTarget) -> bool {
         if self.store.is_empty() {
@@ -4933,9 +4932,8 @@ impl App {
         let text = format_all(&refs);
         let n = refs.len();
         logln!("export ({n}) -> {} ::\n{text}", target.label());
-        let delivered = match target.export(&text) {
+        match target.export(&text) {
             Ok(()) => {
-                self.store.take_all();
                 self.status = target.success_message(n);
                 logln!("export OK");
                 true
@@ -4945,16 +4943,10 @@ impl App {
                 logln!("export ERR: {e:#}");
                 false
             }
-        };
-        self.clamp_list_cursor();
-        if self.store.is_empty() {
-            self.close_list();
         }
-        delivered
     }
 
-    /// Delete every live comment and the branch-and-cwd JSON file. The file stays until
-    /// this runs; send and copy do not remove it.
+    /// Delete every live comment and the branch-and-cwd JSON file. Send and copy do not.
     pub fn clear_comments(&mut self) {
         let had = !self.store.is_empty();
         self.store.take_all();
@@ -5325,6 +5317,57 @@ mod tests {
         let mut recovered = App::new(PathBuf::from("."), Scope::Uncommitted, None);
         recovered.carry_authored_state_from(&mut old);
         assert_eq!(recovered.commit_pick, Some(CommitPick::single("d")));
+    }
+
+    #[test]
+    fn send_and_copy_keep_comments_and_clear_removes_them() {
+        struct Keep;
+        impl crate::export::ExportTarget for Keep {
+            fn export(&self, _: &str) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn label(&self) -> &'static str {
+                "keep"
+            }
+            fn success_message(&self, count: usize) -> String {
+                format!("sent {count}")
+            }
+            fn failure_message(&self) -> String {
+                "failed".into()
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["init", "-q", "-b", "topic"])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let mut app = App::new(repo.to_path_buf(), Scope::Uncommitted, None);
+        app.store.add(Comment {
+            file: "a.rs".into(),
+            side: Side::New,
+            start: 1,
+            end: 1,
+            lines: "+x".into(),
+            text: "keep".into(),
+            diff_anchored: true,
+            rev: crate::model::Rev::Worktree,
+        });
+        crate::persist::save(repo, &app.store).unwrap();
+
+        assert!(app.export(&Keep));
+        assert_eq!(app.store.len(), 1, "a successful send leaves the review");
+        assert!(app.export(&Keep));
+        assert_eq!(app.store.len(), 1, "a successful copy leaves the review");
+        assert_eq!(crate::persist::load(repo).len(), 1);
+
+        app.clear_comments();
+        assert!(app.store.is_empty());
+        assert!(crate::persist::load(repo).is_empty());
     }
 
     #[test]

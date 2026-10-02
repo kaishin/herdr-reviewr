@@ -1407,7 +1407,7 @@ fn a_refresh_while_composing_freezes_input_and_diff() {
 }
 
 #[test]
-fn a_failed_export_keeps_comments_and_success_consumes_them() {
+fn a_failed_export_keeps_comments_and_success_keeps_them() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "one");
@@ -1419,7 +1419,7 @@ fn a_failed_export_keeps_comments_and_success_consumes_them() {
 
     let target = FakeTarget::ok();
     app.export(&target);
-    assert!(app.store.is_empty(), "a successful export consumes the comments");
+    assert_eq!(app.store.len(), 2, "a successful export leaves the comments in the review");
     assert_eq!(app.status, "exported 2 comments", "the target owns the success confirmation");
 
     // The sent text is the real export block format, end to end through App::export.
@@ -1434,14 +1434,14 @@ fn a_failed_export_keeps_comments_and_success_consumes_them() {
 }
 
 #[test]
-fn send_consumes_the_whole_set() {
+fn send_keeps_the_whole_set() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "first");
     comment_on(&mut app, '-', "second");
 
     app.export(&FakeTarget::ok());
-    assert!(app.store.is_empty(), "send takes every comment, not just one");
+    assert_eq!(app.store.len(), 2, "send leaves every comment, not just one");
 }
 
 #[test]
@@ -3692,7 +3692,7 @@ fn rebinding_down_frees_the_arrow_and_tab_stays_fixed() {
     let mut app = app_on(&r);
     let keymap = Keymap::resolve(&[
         (Action::Down, vec![Key::plain('x')]),
-        (Action::Up, vec![Key::plain('X')]),
+        (Action::Up, vec![Key::plain('Z')]),
     ])
     .unwrap();
     app.focus = Focus::Diff;
@@ -3704,6 +3704,8 @@ fn rebinding_down_frees_the_arrow_and_tab_stays_fixed() {
 
     press(&mut app, &keymap, KeyCode::Char('x'));
     assert!(app.diff_cursor > 0, "the bound key moves the cursor");
+    press(&mut app, &keymap, KeyCode::Char('Z'));
+    assert_eq!(app.diff_cursor, 0, "the bound up key moves back");
 
     press(&mut app, &keymap, KeyCode::Tab);
     assert_eq!(app.focus, Focus::Files, "tab is structural and never rebinds");

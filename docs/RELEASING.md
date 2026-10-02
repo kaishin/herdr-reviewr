@@ -1,14 +1,14 @@
 # Releasing
 
 How to cut a herdr-reviewr release. A `v*` tag push is the trigger: `.github/workflows/release.yml`
-creates the GitHub Release and uploads a prebuilt binary per target, and `herdr/install.sh`
-downloads the matching asset on `herdr plugin install`.
+creates the GitHub Release. This fork's `herdr/install.sh` builds the checkout from source
+on `herdr plugin install`; it does not download a release asset.
 
 ## The one rule
 
-**The manifest version and the tag must match.** `herdr/install.sh` reads `version` from
-`herdr-plugin.toml`, sets `TAG="v${version}"`, and downloads from
-`releases/download/${TAG}/`. A `0.2.0` manifest needs a `v0.2.0` tag, or installs 404.
+**The manifest version and the tag must match.** `Cargo.toml` and `herdr-plugin.toml` carry
+the same `X.Y.Z`, and the tag is `vX.Y.Z`. This fork's installer builds that checkout; it does
+not download `releases/download/vX.Y.Z/`.
 
 Two files carry the version — keep them equal:
 
@@ -73,7 +73,7 @@ end-to-end test: it exercises the exact `herdr plugin install` path a user hits.
 
    ```bash
    herdr plugin unlink persiyanov.reviewr
-   herdr plugin install persiyanov/herdr-reviewr --yes   # install.sh downloads the vX.Y.Z binary
+   herdr plugin install kaishin/herdr-reviewr --yes   # install.sh builds the tagged checkout
    herdr plugin list --plugin persiyanov.reviewr          # confirm: github source + version X.Y.Z
    ```
 
@@ -95,7 +95,7 @@ end-to-end test: it exercises the exact `herdr plugin install` path a user hits.
   herdr API. A normal feature release leaves it as is.
 - **Code signing** is a local-dev concern, not a release one: CI produces fresh binaries, while a
   contributor's in-place rebuild needs `just install` (see the README) to avoid an Apple-Silicon
-  SIGKILL. Release assets are downloaded fresh by `install.sh`, so they are unaffected.
+  SIGKILL. `install.sh` builds a fresh binary and re-signs it on macOS.
 - **QA against the installed plugin** uses `just qa-install`, never a bare `cp`. Overwriting the
   installed binary in place invalidates its cached code signature, macOS SIGKILLs every launch,
   and the pane opens dead with no error — the recipe replaces the inode and ad-hoc re-signs.
