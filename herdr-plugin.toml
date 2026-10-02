@@ -8,9 +8,9 @@ min_herdr_version = "0.7.5"
 platforms = ["macos", "linux"]
 description = "Review agent-written diffs beside the chat and add line comments to the agent input."
 
-# On `herdr plugin install`, download the prebuilt `herdr-reviewr` binary for this platform from
-# the matching GitHub Release into $HERDR_PLUGIN_ROOT/bin (no Rust toolchain needed). Skipped by
-# `herdr plugin link` — for a local checkout, build it yourself with `cargo install --path .`.
+# On `herdr plugin install`, build `herdr-reviewr` from this checkout into
+# $HERDR_PLUGIN_ROOT/bin. Needs a Rust toolchain. Skipped by `herdr plugin link` — for a
+# local checkout, build it yourself with `just install`.
 [[build]]
 command = ["bash", "herdr/install.sh"]
 
