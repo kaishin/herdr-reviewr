@@ -1,72 +1,33 @@
 #!/usr/bin/env bash
-# herdr's `[[build]]` step: put this platform's release binary in bin/; `plugin link` skips it.
+# herdr `[[build]]` step: build herdr-reviewr from this checkout into bin/herdr-reviewr.
+# Runs on `herdr plugin install` (a managed checkout). `herdr plugin link` skips the build
+# step — for a local checkout, build with `just install`.
+#
+# The build runs with the plugin checkout as the working directory, so we resolve the plugin root
+# from this script's location rather than $HERDR_PLUGIN_ROOT (build commands may not receive the
+# runtime env). At runtime the pane command reads $HERDR_PLUGIN_ROOT/bin/herdr-reviewr.
 set -euo pipefail
 
 NAME="herdr-reviewr"
-# Every line this step prints starts with the plugin's name, as the action lines do.
-SAY="reviewr"
-REPO="persiyanov/herdr-reviewr"
 
 # The root from this script's place: build commands may not receive herdr's runtime env.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN_DIR="$ROOT/bin"
 
-# The release tag matches the manifest version, so a checkout always pulls its own release.
-VERSION="$(grep -m1 '^version' "$ROOT/herdr-plugin.toml" | sed -E 's/.*"([^"]+)".*/\1/')"
-TAG="v${VERSION}"
+# herdr runs plugin commands with a minimal PATH. A user cargo install is usually under
+# ~/.cargo/bin, which is not on that PATH.
+export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-}"
 
-# Map the running platform to the release target triple.
-os="$(uname -s)"
-arch="$(uname -m)"
-case "$os-$arch" in
-  Darwin-arm64)              target="aarch64-apple-darwin" ;;
-  Darwin-x86_64)             target="x86_64-apple-darwin" ;;
-  Linux-aarch64 | Linux-arm64) target="aarch64-unknown-linux-musl" ;;
-  Linux-x86_64)              target="x86_64-unknown-linux-musl" ;;
-  *)
-    echo "$SAY: no prebuilt binary for $os-$arch, build with 'cargo build --release' and copy target/release/herdr-reviewr into bin/" >&2
-    exit 1
-    ;;
-esac
-
-archive="${NAME}-${target}.tar.gz"
-# taiki-e's checksum sidecar drops the archive extension: <name>-<target>.sha256, not <archive>.sha256.
-checksum="${NAME}-${target}.sha256"
-base="https://github.com/${REPO}/releases/download/${TAG}"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-# GitHub's CDN can 404 a fresh release's asset for minutes, so every failure retries, here
-# rather than with curl's retry flags, which older curls (RHEL 8, CentOS 7) lack.
-dl() {
-  for _ in 1 2 3 4 5 6; do
-    curl -fsSL "$1" -o "$2" && return
-    sleep 3
-  done
-  return 1
-}
-
-echo "$SAY: downloading $archive ($TAG)"
-dl "$base/$archive" "$tmp/$archive"
-dl "$base/$checksum" "$tmp/$checksum"
-
-echo "$SAY: verifying checksum"
-expected="$(awk '{print $1}' "$tmp/$checksum")"
-if command -v sha256sum >/dev/null 2>&1; then
-  actual="$(sha256sum "$tmp/$archive" | awk '{print $1}')"
-else
-  actual="$(shasum -a 256 "$tmp/$archive" | awk '{print $1}')"
-fi
-if [ "$expected" != "$actual" ]; then
-  echo "$SAY: checksum mismatch (expected $expected, got $actual)" >&2
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "$NAME: cargo is required to build this fork from source" >&2
   exit 1
 fi
 
+echo "$NAME: building release from source"
+cargo build --release --manifest-path "$ROOT/Cargo.toml"
 mkdir -p "$BIN_DIR"
-tar -xzf "$tmp/$archive" -C "$tmp"
-install -m 0755 "$tmp/$NAME" "$BIN_DIR/$NAME"
-echo "$SAY: installed $BIN_DIR/$NAME"
+"$ROOT/scripts/swap-binary.sh" "$ROOT/target/release/$NAME" "$BIN_DIR/$NAME"
+echo "$NAME: installed $BIN_DIR/$NAME"
 
 # Stable launch paths as symlinks, re-pointed each install; a user's own file there is left alone.
 # A staging checkout gets renamed, so every action re-points them at the live root too.
