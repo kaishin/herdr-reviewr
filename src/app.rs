@@ -576,6 +576,7 @@ pub enum FooterAction {
     Send,
     List,
     Copy,
+    Clear,
     Save,
     Newline,
     Cancel,
@@ -775,6 +776,9 @@ pub struct App {
     /// beneath it, so the gesture's end reloads it once.
     view_reload_held: bool,
     pub store: CommentStore,
+    /// The branch whose comment file `store` was last loaded from. `None` is detached
+    /// `HEAD`, which has no file.
+    persisted_branch: Option<String>,
     pub list_cursor: usize,
     /// The picker's rows, frozen at the moment it opened. A refresh behind it adds, drops,
     /// and reorders nothing.
@@ -913,6 +917,8 @@ impl App {
         // mirror follows its completions.
         let turn_baseline = if load_turn { crate::world::seed_baseline(&repo) } else { None };
         let theme = theme::resolve(None);
+        let store = crate::persist::load(&repo);
+        let persisted_branch = git::checked_out_branch(&repo).ok().flatten();
         Self {
             repo,
             base,
@@ -969,7 +975,8 @@ impl App {
             last_click: None,
             view_reload_held: false,
             select_anchor: None,
-            store: CommentStore::new(),
+            store,
+            persisted_branch,
             list_cursor: 0,
             picker_rows: Vec::new(),
             picker_cursor: 0,
@@ -1109,6 +1116,7 @@ impl App {
     /// against, matching the ordinary refresh invariant.
     pub(crate) fn carry_authored_state_from(&mut self, old: &mut Self) {
         self.store = std::mem::take(&mut old.store);
+        self.persisted_branch = old.persisted_branch.take();
         self.list_cursor = old.list_cursor;
         // The footer expansion is one global toggle, carried regardless of the recovered mode
         self.keys_expanded = old.keys_expanded;
@@ -1283,9 +1291,11 @@ impl App {
     }
 
     /// Never touches the comment store or the in-progress input — that is the
-    /// "a comment is never lost to a refresh" invariant.
+    /// "a comment is never lost to a refresh" invariant. A branch change reloads the
+    /// file for the branch now checked out.
     pub fn reload(&mut self) -> Result<()> {
         self.ensure_config_ready()?;
+        self.sync_persisted_branch();
         // The PR tab holds its own state and renders nothing from the file tree, so a poll on
         // it skips the rebuild; switching back to a file tab reloads it then.
         if !self.tab.is_file_tab() {
@@ -1309,6 +1319,25 @@ impl App {
         let snapshot = crate::world::build(&self.world_input())?;
         self.reconcile_world(snapshot);
         Ok(())
+    }
+
+    /// Reload comments when the checked-out branch changed since the last sync. The same
+    /// branch keeps the live list, including comments just sent.
+    fn sync_persisted_branch(&mut self) {
+        let branch = git::checked_out_branch(&self.repo).ok().flatten();
+        if branch == self.persisted_branch {
+            return;
+        }
+        self.store = crate::persist::load(&self.repo);
+        self.persisted_branch = branch;
+        self.clamp_list_cursor();
+    }
+
+    fn persist_comments(&mut self) {
+        if let Err(e) = crate::persist::save(&self.repo, &self.store) {
+            logln!("comment persist failed: {e:#}");
+            self.status = "could not save comments".to_string();
+        }
     }
 
     /// The input the next world build reads — the tag a landed snapshot is checked against
@@ -1355,6 +1384,7 @@ impl App {
     /// A navigator drag never reaches here: it gates the world drain itself, so the snapshot
     /// waits in the completion channel (`lib.rs`).
     pub fn reconcile_world(&mut self, snapshot: crate::world::WorldSnapshot) {
+        self.sync_persisted_branch();
         // A content change under the pointer resets the multi-click chain — the clicked
         // row's own text counts, so a same-length edit under the pointer breaks it too — while
         // a snapshot that changed nothing on screen leaves a double-click in flight alone
@@ -3694,12 +3724,14 @@ impl App {
             Some(i) => {
                 logln!("comment edit [{i}] :: {text}");
                 self.store.edit(i, text);
+                self.persist_comments();
                 self.status = "comment updated".to_string();
             }
             None => {
                 if let Some(c) = self.build_comment(text) {
                     logln!("comment add {} :: {}", c.location(), c.text);
                     self.store.add(c);
+                    self.persist_comments();
                     self.status = "comment added".to_string();
                 }
             }
@@ -3847,6 +3879,7 @@ impl App {
         if let Some(i) = self.target_comment() {
             logln!("comment delete [{i}]");
             self.store.take(i);
+            self.persist_comments();
             self.clamp_list_cursor();
             self.status = "comment deleted".to_string();
             // Don't strand the user in an empty "Comments (0)" overlay, matching `export`.
@@ -4260,6 +4293,7 @@ impl App {
                     out.push((A::EditComment, Do));
                 }
                 out.push((A::DeleteComment, Do));
+                out.push((A::Clear, Do));
                 return out;
             }
             Mode::Picker => {
@@ -4457,6 +4491,7 @@ impl App {
         if !self.store.is_empty() {
             out.push((A::List, Go));
             out.push((A::Copy, Go));
+            out.push((A::Clear, Go));
         }
         if !out.iter().any(|&(a, _)| a == A::Refresh) {
             out.push((A::Refresh, Go));
@@ -4885,8 +4920,9 @@ impl App {
         }
     }
 
-    /// Send/copy every written comment to `target`; consume the whole set only on
-    /// success. A failed export leaves all comments in place.
+    /// Send/copy every written comment to `target`; consume the live list only on
+    /// success. A failed export leaves all comments in place. Neither outcome deletes
+    /// the branch-and-cwd JSON file.
     /// Reports whether the comments were delivered.
     pub fn export(&mut self, target: &dyn ExportTarget) -> bool {
         if self.store.is_empty() {
@@ -4915,6 +4951,25 @@ impl App {
             self.close_list();
         }
         delivered
+    }
+
+    /// Delete every live comment and the branch-and-cwd JSON file. The file stays until
+    /// this runs; send and copy do not remove it.
+    pub fn clear_comments(&mut self) {
+        let had = !self.store.is_empty();
+        self.store.take_all();
+        self.clamp_list_cursor();
+        self.close_list();
+        match crate::persist::clear(&self.repo) {
+            Ok(()) => {
+                logln!("comments cleared");
+                self.status = if had { "comments cleared".into() } else { "no comments".into() };
+            }
+            Err(e) => {
+                logln!("comment clear failed: {e:#}");
+                self.status = "could not clear comments".into();
+            }
+        }
     }
 
     /// The number of files changed in the active scope — the header count, the same on both

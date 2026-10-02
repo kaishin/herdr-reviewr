@@ -2601,6 +2601,7 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
         A::Send => return (hint(K::Send), format!("send {}", app.store.len())),
         A::List => (hint(K::Comments), "comments"),
         A::Copy => (hint(K::Copy), "copy"),
+        A::Clear => (hint(K::Clear), "clear"),
         A::Save => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),

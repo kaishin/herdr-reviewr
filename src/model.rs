@@ -1,7 +1,8 @@
 //! In-memory review model: scopes, changed files, and comments.
 //!
-//! Comments live only for the session and are
-//! removed by export or delete — never by a refresh.
+//! Comments are also written to a branch-and-cwd JSON file. Export removes them from
+//! the live list but leaves that file; only an explicit clear deletes it. A refresh
+//! never removes a comment.
 
 /// Which set of changes the Changes view shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -151,7 +152,8 @@ impl Comment {
     }
 }
 
-/// The in-memory comment list for one worktree review session.
+/// The comment list for one worktree review. The live copy is this list; the branch-and-cwd
+/// JSON file is the copy that survives a restart.
 #[derive(Default, Debug)]
 pub struct CommentStore {
     items: Vec<Comment>,

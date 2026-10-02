@@ -1,8 +1,9 @@
 //! Formatting comments and exporting them to the agent or clipboard.
 //!
 //! A comment becomes a block of `location`, the
-//! diff snippet, then the text. Export is consume-on-success: the caller removes
-//! a comment only after `export` returns `Ok`.
+//! diff snippet, then the text. Export is consume-on-success for the live list: the
+//! caller removes a comment only after `export` returns `Ok`. The branch-and-cwd JSON
+//! file is not that list — send and copy leave it in place.
 
 use std::io::Write;
 use std::process::Stdio;

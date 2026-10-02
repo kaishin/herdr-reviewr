@@ -351,6 +351,7 @@ The action names and their defaults:
 | `keys` | `?` |
 | `send` | `s`, `S` |
 | `copy` | `y`, `Y` |
+| `clear` | `X` |
 | `open-pr` | `o` |
 | `refresh` | `r` |
 | `quit` | `q` |
@@ -461,10 +462,11 @@ The known constraints:
   more.
 
 **Review model**
-- **Comments are in-memory and single-session** — closing the pane loses any you haven't sent
-  or copied out.
-- **Sending is all-or-nothing** — Send (or copy) delivers the whole set and clears it. A
-  failure leaves everything in place.
+- **Comments persist per branch and directory** — they are JSON in reviewr's cache,
+  one file for this checkout and the checked-out branch. Reopening that pair restores
+  them. Send and copy leave the file in place; `clear` is the only command that deletes it.
+- **Sending is all-or-nothing** — Send (or copy) delivers the whole live set and clears
+  that list. A failure leaves everything in place. The JSON file stays until `clear`.
 - **No line-number rebasing** — a comment stays locatable by its diff snippet, not its line
   number. reviewr flags a stale comment instead of dropping it.
 
