@@ -1,5 +1,5 @@
 # The demo recording, through the installed release; needs git, herdr, jq, vhs. Regenerate with:
-# VERSION=$(awk -F'"' '/^version = / {print $2; exit}' herdr-plugin.toml) && herdr plugin install persiyanov/herdr-reviewr --ref "v$VERSION" --yes && vhs assets/demo.tape
+# VERSION=$(awk -F'"' '/^version = / {print $2; exit}' herdr-plugin.toml) && herdr plugin install kaishin/herdr-reviewr --ref "v$VERSION" --yes && vhs assets/demo.tape
 
 Require git
 Require herdr

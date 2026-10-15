@@ -770,7 +770,7 @@ fn an_action_repoints_the_stable_launch_paths_at_the_live_plugin_root() {
 
     assert!(output.status.success(), "{}", stderr(&output));
     let state_link =
-        home.path().join(".local/state/herdr/plugins/persiyanov.reviewr/bin/herdr-reviewr");
+        home.path().join(".local/state/herdr/plugins/kaishin.reviewr/bin/herdr-reviewr");
     assert_eq!(fs::read_link(&state_link).unwrap(), root.path().join("bin/herdr-reviewr"));
     let bin_link = home.path().join(".local/bin/herdr-reviewr");
     assert!(!bin_link.exists(), "~/.local/bin must not be created for the link");
@@ -877,7 +877,7 @@ fn an_open_reports_the_pane_it_opened() {
     assert_eq!(
         open,
         format!(
-            "plugin pane open --plugin persiyanov.reviewr --entrypoint pane --placement split \
+            "plugin pane open --plugin kaishin.reviewr --entrypoint pane --placement split \
              --target-pane w1:p1 --direction right --cwd {} --focus",
             env!("CARGO_MANIFEST_DIR")
         )

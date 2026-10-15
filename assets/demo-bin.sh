@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="$(awk -F'"' '/^version = / {print $2; exit}' "$ROOT/herdr-plugin.toml")"
 BIN="$(
-  herdr plugin list --plugin persiyanov.reviewr --json |
+  herdr plugin list --plugin kaishin.reviewr --json |
     jq -er --arg version "$VERSION" \
       '.result.plugins[]
        | select(

@@ -60,7 +60,7 @@ pub enum SendTarget {
 }
 
 /// The plugin's id, as herdr knows it: its config dir, its state dir, its pane entrypoint.
-pub(crate) const PLUGIN_ID: &str = "persiyanov.reviewr";
+pub(crate) const PLUGIN_ID: &str = "kaishin.reviewr";
 
 /// A herdr context variable; herdr leaves one unset or empty alike.
 pub(crate) fn var(name: &str) -> Option<String> {

@@ -1,4 +1,4 @@
-id = "persiyanov.reviewr"
+id = "kaishin.reviewr"
 name = "reviewr"
 version = "0.48.0"
 # 0.9.3 adds the socket reads the herdr connection relies on (`session.snapshot`, live subscriptions,

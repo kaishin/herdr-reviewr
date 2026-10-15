@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Plugin id is `kaishin.reviewr`.** Keybindings, config, and the stable launch path follow that id. Reinstall this fork; config under `persiyanov.reviewr` does not move with it.
+
 ## [0.48.0] — 2026-10-19
 
 ### Added

@@ -48,20 +48,22 @@ reviewr never edits your files, never sends on its own, and never posts to your 
 
 ## Install
 
+Needs a Rust toolchain. `herdr plugin install` builds this checkout from source:
+
 ```bash
-herdr plugin install persiyanov/herdr-reviewr
+herdr plugin install kaishin/herdr-reviewr
 ```
 
 reviewr opens on its own when herdr creates a workspace for a worktree. To open it yourself:
 
 ```bash
-herdr plugin action invoke open --plugin persiyanov.reviewr
+herdr plugin action invoke open --plugin kaishin.reviewr
 ```
 
 **To update**, reinstall. Your config stays:
 
 ```bash
-herdr plugin uninstall persiyanov.reviewr && herdr plugin install persiyanov/herdr-reviewr
+herdr plugin uninstall kaishin.reviewr && herdr plugin install kaishin/herdr-reviewr
 ```
 
 **Without herdr**, run a [release binary](https://github.com/persiyanov/herdr-reviewr/releases/latest)
@@ -87,7 +89,7 @@ To toggle reviewr with a key, add this to `~/.config/herdr/config.toml`:
 [[keys.command]]
 key = "cmd+r"   # many macOS terminals swallow alt+
 type = "plugin_action"
-command = "persiyanov.reviewr.toggle"
+command = "kaishin.reviewr.toggle"
 ```
 
 ## Controls
@@ -187,7 +189,7 @@ Flags on the pane command:
 | `--theme <name>` | `catppuccin` | color theme |
 | `--wrap <on\|off>` | `on` | wrap long lines |
 
-Everything else goes in `~/.config/herdr/plugins/config/persiyanov.reviewr/config.toml`. Saving
+Everything else goes in `~/.config/herdr/plugins/config/kaishin.reviewr/config.toml`. Saving
 it applies at once. An invalid file blocks the pane with the error until you fix it.
 
 ```toml
@@ -311,7 +313,7 @@ your agent focused. `auto_open = false` turns that off.
 ### Layouts
 
 To place reviewr in a herdr layout, give a pane `command = "herdr-reviewr"`. If `~/.local/bin`
-isn't on your `PATH`, use `~/.local/state/herdr/plugins/persiyanov.reviewr/bin/herdr-reviewr`.
+isn't on your `PATH`, use `~/.local/state/herdr/plugins/kaishin.reviewr/bin/herdr-reviewr`.
 On Windows, point it at the plugin's own `bin` folder.
 
 ## Limitations
@@ -344,7 +346,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). To run your build in herdr:
 git clone https://github.com/persiyanov/herdr-reviewr
 cd herdr-reviewr
 just install   # build to bin/herdr-reviewr, re-signed on macOS
-herdr plugin uninstall persiyanov.reviewr
+herdr plugin uninstall kaishin.reviewr
 herdr plugin link .
 ```
 

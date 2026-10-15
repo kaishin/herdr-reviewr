@@ -34,7 +34,7 @@ link_binary() {
     echo "$NAME: warning: could not link $1/$NAME" >&2
   fi
 }
-link_binary "$HOME/.local/state/herdr/plugins/persiyanov.reviewr/bin"
+link_binary "$HOME/.local/state/herdr/plugins/kaishin.reviewr/bin"
 if [ -d "$HOME/.local/bin" ]; then
   link_binary "$HOME/.local/bin"
 fi

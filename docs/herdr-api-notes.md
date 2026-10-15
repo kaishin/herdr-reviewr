@@ -104,7 +104,7 @@ The direct-run mode rides on four calls plus the plain-pane env, all confirmed l
   stamps its own pane `reviewr` at startup and clears it on a normal exit — display only,
   nothing reads it back.
 - **`herdr plugin config-dir <plugin_id>`** prints the plugin's config directory
-  (`~/.config/herdr/plugins/config/persiyanov.reviewr`). The binary falls back to it when
+  (`~/.config/herdr/plugins/config/kaishin.reviewr`). The binary falls back to it when
   `HERDR_PLUGIN_CONFIG_DIR` is unset, so a hand-launched pane reads the same `config.toml`.
 - **`herdr pane split [--pane <id>|--current] [--direction …] [--ratio …] [--cwd …] [--env K=V]
   [--focus|--no-focus]`, `pane run <id> <command>…`, `pane current`** exist for layout tooling.
@@ -208,7 +208,7 @@ On macOS and Linux reviewr prepends the common host bin dirs when it resolves `g
 [[keys.command]]
 key = "cmd+r"
 type = "plugin_action"
-command = "persiyanov.reviewr.toggle"   # <plugin_id>.<action_id> — plugin_id is the manifest `id`, not `name`
+command = "kaishin.reviewr.toggle"   # <plugin_id>.<action_id> — plugin_id is the manifest `id`, not `name`
 ```
 `cmd+…` chords reach herdr; `alt+…` chords are composed into characters by macOS and don't register.
 

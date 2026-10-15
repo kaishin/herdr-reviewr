@@ -74,19 +74,19 @@ Switch your own machine from the dev link to the published release. This is also
 end-to-end test: it exercises the exact `herdr plugin install` path a user hits.
 
 1. **Swap the link for the release.** Your config survives — `config.toml` lives in
-   `~/.config/herdr/plugins/config/persiyanov.reviewr/`, keyed by plugin id, untouched by a reinstall.
+   `~/.config/herdr/plugins/config/kaishin.reviewr/`, keyed by plugin id, untouched by a reinstall.
 
    ```bash
-   herdr plugin unlink persiyanov.reviewr
+   herdr plugin unlink kaishin.reviewr
    herdr plugin install kaishin/herdr-reviewr --yes   # install.sh builds the tagged checkout
-   herdr plugin list --plugin persiyanov.reviewr          # confirm: github source + version X.Y.Z
+   herdr plugin list --plugin kaishin.reviewr          # confirm: github source + version X.Y.Z
    ```
 
 2. **Relaunch the reviewr pane** so it runs the new binary instead of the old process.
    A running pane keeps its old binary image until it closes. Closing is safe to script:
 
    ```bash
-   herdr plugin action invoke close --plugin persiyanov.reviewr   # closes the focused workspace's reviewr panes
+   herdr plugin action invoke close --plugin kaishin.reviewr   # closes the focused workspace's reviewr panes
    ```
 
    **Reopen with your own toggle keybinding, never a scripted `open`.** The `open` and `toggle`
