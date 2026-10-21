@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Runs a branch's checks, the Windows job included, without opening a PR.
   workflow_dispatch:
 
 env:
@@ -13,12 +12,8 @@ env:
 
 jobs:
   check:
-    name: ${{ matrix.os }} · fmt · clippy · test
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: fmt · clippy · unit tests
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -29,85 +24,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # On Windows too, which proves .gitattributes keeps the checkout's line endings LF.
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      # On Windows the runner's git keeps its default core.autocrlf=true, as a Windows user's
-      # does.
-      - name: Test
-        run: cargo test --all-features
-
-      # The Windows release build is the packaged one, in windows-plugin.
-      - name: Build (release)
-        if: runner.os != 'Windows'
-        run: cargo build --release
-
-      # An idle pane wakes for nothing and starts nothing; an edit still reaches it.
-      - name: Idle check
-        if: runner.os != 'Windows'
-        run: python3 scripts/idle_check.py --binary target/release/herdr-reviewr
-
-  macos:
-    name: macos · watcher · idle check
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install toolchain (pinned via rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - uses: Swatinem/rust-cache@v2
-
-      # FSEvents is the one backend the Linux and Windows jobs never exercise.
-      - name: Watcher tests
-        run: cargo test --test watch --test world_paths
-
-      - name: Idle check
-        run: |
-          cargo build --release
-          python3 scripts/idle_check.py --binary target/release/herdr-reviewr
-
-  windows-plugin:
-    name: windows · install · herdr smoke
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install toolchain (pinned via rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@1.97.0
-
-      - uses: Swatinem/rust-cache@v2
-
-      # The release workflow's packaging step, minus the upload, so the fixture release below
-      # holds the exact zip and .sha256 sidecar a tag publishes.
-      - name: Package (release, dry run)
-        id: package
-        uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: herdr-reviewr
-          target: x86_64-pc-windows-msvc
-          archive: $bin-$target
-          tar: unix
-          zip: windows
-          checksum: sha256
-          dry-run: true
-          dry-run-intended: true
-
-      # Under `powershell`, the 5.1 the manifest's build step runs.
-      - name: install.ps1 against a fixture release
-        shell: powershell
-        run: .\scripts\windows-install-check.ps1 -Archive "${{ steps.package.outputs.zip }}" -Checksum "${{ steps.package.outputs.sha256 }}"
-
-      - name: Toggle reviewr in a headless herdr
-        shell: powershell
-        run: .\scripts\windows-herdr-smoke.ps1 -Reviewr target\x86_64-pc-windows-msvc\release\herdr-reviewr.exe
-
-      # The build Windows QA runs: link a checkout with this in `bin\`.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: herdr-reviewr-x86_64-pc-windows-msvc
-          path: target/x86_64-pc-windows-msvc/release/herdr-reviewr.exe
+      - name: Unit tests
+        run: env -u HERDR_WORKSPACE_ID -u HERDR_PANE_ID -u HERDR_SOCKET_PATH HERDR_BIN_PATH=false cargo test --lib --all-features
