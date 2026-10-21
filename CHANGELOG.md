@@ -12,6 +12,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Agents can run `herdr-reviewr --mark-reviewed <file>...`** in the checkout to mark files without opening the UI. Repeating it keeps them marked; `r` reloads the marks in an open pane.
 - **Explicit reviewed marks mirror to your open GitHub PR's Viewed state.** `x` marks/unmarks and `--mark-reviewed` write one-way for the authenticated viewer; branches without an open GitHub PR stay local. Refreshes and content edits never write to GitHub. Failures warn without losing local marks.
 
+### Fixed
+- **Small edits in long files render correctly**: the 50,000-row diff limit counts shared context once, not once per side. The combined 2,000,000-byte cap and whole-file limits remain in place.
+
 ## [0.49.0] — 2026-10-21
 
 ### Changed

@@ -214,7 +214,7 @@ pub struct FileDiff {
     pub pairs: Vec<(u32, u32)>,
 }
 
-/// The line budget; the byte budget below catches one huge line.
+/// The unfolded row budget; shared diff context counts once.
 pub(crate) const MAX_LINES: usize = 50_000;
 /// The byte budget. A file larger than this renders as a `too_large` notice.
 pub(crate) const MAX_BYTES: usize = 2_000_000;
@@ -286,7 +286,11 @@ impl FileDiff {
         }
         // One split feeds both the diff and the highlighter, so row `i` paints line `i`.
         let (old_lines, new_lines) = (lines(old), lines(new));
-        if old_lines.len() + new_lines.len() > MAX_LINES {
+        if old_lines.len().max(new_lines.len()) > MAX_LINES {
+            return notice(Notice::TooLarge);
+        }
+        let diff = TextDiff::from_slices(&old_lines, &new_lines);
+        if diff.iter_all_changes().take(MAX_LINES + 1).count() > MAX_LINES {
             return notice(Notice::TooLarge);
         }
 
@@ -296,7 +300,7 @@ impl FileDiff {
         let line = |spans: &[Vec<Span>], i: usize| spans.get(i).cloned().unwrap_or_default();
 
         let mut rows = Vec::new();
-        for change in TextDiff::from_slices(&old_lines, &new_lines).iter_all_changes() {
+        for change in diff.iter_all_changes() {
             match change.tag() {
                 ChangeTag::Equal => {
                     let (oi, ni) = (change.old_index().unwrap(), change.new_index().unwrap());
@@ -714,6 +718,58 @@ mod tests {
     fn build(old: &str, new: &str) -> FileDiff {
         let hl = Highlighter::new(mocha());
         FileDiff::build("a.rs".into(), None, old, new, &hl)
+    }
+
+    #[test]
+    fn a_small_edit_can_use_the_full_row_budget() {
+        let old = "context\n".repeat(super::MAX_LINES - 3);
+        let new = format!("{old}added\nadded\nadded\n");
+        let d = build(&old, &new);
+        assert_eq!(d.notice, None);
+        let inserted: Vec<_> = d.rows.iter().filter(|r| r.marker() == '+').collect();
+        assert_eq!(inserted.len(), 3);
+        assert_eq!(inserted[0].new_no(), Some(super::MAX_LINES as u32 - 2));
+        assert_eq!(inserted[2].new_no(), Some(super::MAX_LINES as u32));
+        let unfolded: usize = d
+            .rows
+            .iter()
+            .map(|r| match r {
+                Row::Fold { lines } => lines.len(),
+                _ => 1,
+            })
+            .sum();
+        assert_eq!(unfolded, super::MAX_LINES);
+    }
+
+    #[test]
+    fn the_row_budget_counts_both_sides_of_a_replacement() {
+        let context = "context\n".repeat(super::MAX_LINES - 1);
+        for (old, new) in [
+            ("old\n".repeat(super::MAX_LINES / 2), "new\n".repeat(super::MAX_LINES / 2 + 1)),
+            (format!("{context}old\n"), format!("{context}new\n")),
+        ] {
+            let d = build(&old, &new);
+            assert_eq!(d.notice, Some(Notice::TooLarge));
+            assert!(d.rows.is_empty());
+        }
+    }
+
+    #[test]
+    fn each_file_side_keeps_its_line_budget() {
+        let content = "context\n".repeat(super::MAX_LINES + 1);
+        for (old, new) in [(content.as_str(), ""), ("", content.as_str())] {
+            assert_eq!(build(old, new).notice, Some(Notice::TooLarge));
+        }
+        let hl = Highlighter::new(mocha());
+        let d = FileDiff::build_file("a.rs".into(), &content, &hl);
+        assert_eq!(d.notice, Some(Notice::TooLarge));
+    }
+
+    #[test]
+    fn the_byte_budget_still_counts_both_diff_sides() {
+        let old = "a".repeat(super::MAX_BYTES / 2);
+        let new = "b".repeat(super::MAX_BYTES / 2 + 1);
+        assert_eq!(build(&old, &new).notice, Some(Notice::TooLarge));
     }
 
     #[test]
