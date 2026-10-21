@@ -92,7 +92,7 @@ function Wait-For {
 function Invoke-PluginAction {
     param(
         [Parameter(Mandatory = $true, Position = 0)] [string] $Action,
-        [string] $Plugin = 'persiyanov.reviewr',
+        [string] $Plugin = 'kaishin.reviewr',
         [int] $TimeoutSec = 30
     )
     $invoked = (Invoke-Herdr plugin action invoke $Action --plugin $Plugin) | ConvertFrom-Json

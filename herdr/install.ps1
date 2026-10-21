@@ -13,7 +13,7 @@ $ProgressPreference = 'SilentlyContinue'
 $Name = 'herdr-reviewr'
 # Every line this step prints starts with the plugin's name, as the action lines do.
 $Say = 'reviewr'
-$Repo = 'persiyanov/herdr-reviewr'
+$Repo = 'kaishin/herdr-reviewr'
 
 # The root from this script's place: herdr runs the build without the runtime env.
 $Root = Split-Path -Parent $PSScriptRoot

@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 herdr-reviewr is a Rust TUI (ratatui) code-review pane: it runs in a [herdr](https://herdr.dev) pane beside a coding agent, shows the agent's diff, takes line comments, and sends them back to the agent's input. One binary, one git worktree per pane. It also runs standalone (`cargo run` in any repo).
 
+## Fork workflow
+
+Sync upstream with merge commits. Merge `upstream/main` into `main`; do not rebase published fork commits.
+
 ## Commands
 
 - `just test` — full test suite, with the herdr environment stripped so no test can reach a live agent pane. Inside herdr, run a single test the same way: `env -u HERDR_WORKSPACE_ID -u HERDR_PANE_ID -u HERDR_SOCKET_PATH HERDR_BIN_PATH=false cargo test <name>` (unit tests live beside the code, integration tests in `tests/`: `cargo test --test app_flow <name>`).

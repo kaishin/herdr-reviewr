@@ -6,8 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.49.0] — 2026-10-21
+
 ### Changed
+- **Updated to upstream v0.48.0**, including split view, review prefixes, event-driven refreshes, new themes, and Windows support. The fork keeps comment persistence and source builds on macOS and Linux.
 - **Plugin id is `kaishin.reviewr`.** Keybindings, config, and the stable launch path follow that id. Reinstall this fork; config under `persiyanov.reviewr` does not move with it.
+
+### Fixed
+- **Windows install uses this fork's release assets**, and the Windows smoke checks use `kaishin.reviewr`.
 
 ## [0.48.0] — 2026-10-19
 

@@ -14,7 +14,7 @@ function Get-LogWindow([string] $Path, [scriptblock] $During) {
 }
 
 $checkout = Split-Path -Parent $PSScriptRoot
-$plugin = 'persiyanov.reviewr'
+$plugin = 'kaishin.reviewr'
 
 New-Item -ItemType Directory -Force -Path (Join-Path $checkout 'bin') | Out-Null
 Copy-Item -LiteralPath $Reviewr -Destination (Join-Path $checkout 'bin\herdr-reviewr.exe') -Force
