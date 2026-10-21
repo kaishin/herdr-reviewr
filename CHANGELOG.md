@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Mark files reviewed with `x` in Changes.** Marks are local to the checkout and branch, persist beside comments, and reset when the file's contents change. Clearing comments keeps review progress.
+- **`x` is a new default key.** Configs already using it must rebind `reviewed`.
+- **Agents can run `herdr-reviewr --mark-reviewed <file>...`** in the checkout to mark files without opening the UI. Repeating it keeps them marked; `r` reloads the marks in an open pane.
+- **Explicit reviewed marks mirror to your open GitHub PR's Viewed state.** `x` marks/unmarks and `--mark-reviewed` write one-way for the authenticated viewer; branches without an open GitHub PR stay local. Refreshes and content edits never write to GitHub. Failures warn without losing local marks.
+
 ## [0.49.0] — 2026-10-21
 
 ### Changed

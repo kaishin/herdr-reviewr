@@ -1,7 +1,10 @@
 //! Branch-and-cwd JSON comments survive send and copy; only `clear` deletes the file.
 
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -85,6 +88,104 @@ pub fn clear(repo: &Path) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e).with_context(|| format!("delete {}", path.display())),
     }
+}
+
+/// Reviewed paths and their content fingerprints share the comment file's branch-and-cwd folder.
+pub(crate) fn load_reviewed(repo: &Path) -> BTreeMap<String, u64> {
+    let Ok(Some(path)) = path_for(repo) else {
+        return BTreeMap::new();
+    };
+    fs::read(path.with_file_name("reviewed.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn save_reviewed(repo: &Path, reviewed: &BTreeMap<String, u64>) -> Result<()> {
+    let Some(path) = path_for(repo)? else {
+        return Ok(());
+    };
+    let path = path.with_file_name("reviewed.json");
+    fs::create_dir_all(path.parent().unwrap())?;
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, serde_json::to_vec_pretty(reviewed)?)?;
+    fs::rename(&tmp, &path).with_context(|| format!("save {}", path.display()))
+}
+
+/// Mark the supplied cwd-relative files without starting the UI; retries never toggle them off.
+pub fn mark_reviewed(paths: &[OsString]) -> Result<usize> {
+    anyhow::ensure!(!paths.is_empty(), "usage: herdr-reviewr --mark-reviewed <file>...");
+    let config = crate::config::plugin_config_from_herdr()?;
+    let cwd = std::env::current_dir()?;
+    let repo = git::toplevel(&cwd).context("not inside a git worktree")?;
+    let branch = git::checked_out_branch(&repo)
+        .map_err(|e| anyhow::anyhow!(e.0))?
+        .context("cannot save reviewed files with detached HEAD")?;
+    let mut marked = BTreeMap::new();
+    for path in paths {
+        let mut absolute = PathBuf::new();
+        for component in cwd.join(path).components() {
+            match component {
+                Component::ParentDir => {
+                    absolute.pop();
+                }
+                _ => absolute.push(component.as_os_str()),
+            }
+        }
+        let relative = absolute
+            .strip_prefix(&repo)
+            .with_context(|| format!("{} is outside this worktree", absolute.display()))?;
+        let path = relative.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        let fingerprint = reviewed_fingerprint(&repo, &path)
+            .with_context(|| format!("cannot mark {path} reviewed"))?;
+        marked.insert(path, fingerprint);
+    }
+    let count = marked.len();
+    let paths = marked.keys().cloned().map(|path| (path, true)).collect();
+    let mut reviewed = load_reviewed(&repo);
+    reviewed.extend(marked);
+    save_reviewed(&repo, &reviewed)?;
+    let intent = crate::forge::ViewedIntent { branch, base: None, config, paths };
+    if let Err(error) =
+        crate::forge::mirror_viewed(&repo, &intent, &std::sync::atomic::AtomicBool::new(false))
+    {
+        eprintln!("reviewr: warning: marks saved locally; GitHub viewed update failed: {error}");
+    }
+    Ok(count)
+}
+
+/// Hash the worktree bytes, a symlink's target, or a deletion without reading special files.
+pub(crate) fn reviewed_fingerprint(repo: &Path, path: &str) -> Result<u64> {
+    let path = repo.join(path);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut update = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    if metadata.is_symlink() {
+        update(b"link");
+        update(fs::read_link(path)?.as_os_str().as_encoded_bytes());
+    } else {
+        anyhow::ensure!(metadata.is_file(), "not a regular file");
+        update(b"file");
+        let mut file = fs::File::open(path)?;
+        let mut bytes = [0; 8192];
+        loop {
+            let n = file.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            update(&bytes[..n]);
+        }
+    }
+    Ok(hash)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

@@ -37,7 +37,7 @@ comment on lines, and send the comments back.
 - **Markdown review** — `m` renders a `.md` file.
 - **Themes** — 20, dark and light.
 
-reviewr never edits your files, never sends on its own, and never posts to your PR.
+reviewr never edits your files, never sends on its own, and never posts comments to your PR.
 
 ## Requirements
 
@@ -137,6 +137,7 @@ Every key can be rebound ([Keybindings](#keybindings)).
 | `l` | List comments |
 | `s` | Send comments to the agent |
 | `y` | Copy comments |
+| `x` | Mark / unmark the file reviewed in Changes |
 | `esc` | Clear selection |
 
 **Comment box**
@@ -161,6 +162,23 @@ The usual editing keys work: arrows, `Home` / `End`, `Ctrl+A` / `Ctrl+E`, `Alt+b
 
 **Mouse:** drag to copy, double-click a word, triple-click a line. Click or drag line numbers to
 comment. Click files, tabs, and links. Scroll with the wheel.
+
+### Agent command
+
+From the checkout, mark files reviewed without opening the UI:
+
+```bash
+herdr-reviewr --mark-reviewed src/foo.rs src/bar.rs
+```
+
+Paths are relative to the current directory. Repeating the command keeps files marked.
+Marks are local to this checkout and branch, and content edits reset them. Press `r` in an
+open pane to reload agent-written marks.
+
+Explicit `x` marks/unmarks and this command also update your authenticated GitHub viewer's
+**Viewed** state when the branch has an **open GitHub PR**. Without one, marks stay local.
+This is one-way: `r` reloads local marks, not GitHub state. Content edits reset only local marks.
+GitHub failures warn and keep the saved local marks.
 
 ## The three tabs
 

@@ -840,6 +840,8 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
     let mut recovery_inflight = false;
     let (pr_tx, pr_rx) = crate::wake::channel::<TaggedPr>(&waker);
     let mut pr = PrCoordinator::new(app.plugin_config().is_some());
+    let (viewed_tx, viewed_rx) = crate::wake::channel::<Result<(), String>>(&waker);
+    let mut viewed_worker: Option<crate::forge::ViewedWorker> = None;
     // The world worker builds input-tagged jobs; the loop reconciles their completions.
     let (world_tx, world_job_rx) = mpsc::channel::<crate::world::WorldJob>();
     let (world_res_tx, world_rx) = crate::wake::channel::<crate::world::WorldCompletion>(&waker);
@@ -990,6 +992,29 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                 terminal.draw(|f| age_due = ui::render_frame(f, app))?;
             }
             let age_due = age_due.map(|due| Instant::now() + due);
+
+            // Explicit marks paint locally before the FIFO worker touches GitHub.
+            let mut viewed_failed = false;
+            for intent in std::mem::take(&mut app.viewed_pending) {
+                let worker = viewed_worker.get_or_insert_with(|| {
+                    crate::forge::ViewedWorker::spawn(app.repo.clone(), viewed_tx.clone())
+                });
+                if !worker.send(intent) {
+                    app.status = "marks saved locally; GitHub worker unavailable".into();
+                    logln!("GitHub viewed worker unavailable");
+                    viewed_failed = true;
+                }
+            }
+            while let Ok(result) = viewed_rx.try_recv() {
+                if let Err(error) = result {
+                    logln!("GitHub viewed update failed: {error}");
+                    app.status = "marks saved locally; GitHub viewed update failed".into();
+                    viewed_failed = true;
+                }
+            }
+            if viewed_failed {
+                continue;
+            }
 
             // A navigator drag holds the drain; the channel is the queue.
             if !app.gates_world_drain() {
@@ -1403,6 +1428,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
         Ok(())
     })();
     restore_terminal();
+    drop(viewed_worker);
     drain_pr_shutdown(&mut pr, &probe_rx, &pr_rx);
     result
 }
@@ -1942,6 +1968,7 @@ fn dispatch_key(app: &mut App, key: KeyEvent, area: Rect, keymap: &Keymap) -> Re
                 app.export(&Clipboard);
             }
             K::Clear => app.clear_comments(),
+            K::Reviewed => app.toggle_reviewed(),
             K::NextComment => app.jump_comment(1),
             K::PrevComment => app.jump_comment(-1),
             K::Comments => app.open_list(),

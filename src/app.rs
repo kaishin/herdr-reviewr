@@ -1,6 +1,6 @@
 //! The terminal-free review state and its transitions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -540,6 +540,7 @@ pub enum FooterAction {
     /// The quit question's answer that quits, naming the comments still pending.
     QuitDiscard,
     Clear,
+    Reviewed,
     Save,
     Newline,
     Cancel,
@@ -707,6 +708,8 @@ pub struct App {
     /// Whether a gesture held a reload, owed at its end.
     view_reload_held: bool,
     pub store: CommentStore,
+    reviewed: BTreeMap<String, u64>,
+    pub(crate) viewed_pending: Vec<crate::forge::ViewedIntent>,
     /// The branch whose comment file `store` was last loaded from. `None` is detached
     /// `HEAD`, which has no file.
     persisted_branch: Option<String>,
@@ -849,6 +852,7 @@ impl App {
         let last_turn = baseline.map_or(crate::turn::LastTurn::Waiting, crate::turn::LastTurn::At);
         let theme = theme::resolve(None);
         let store = crate::persist::load(&repo);
+        let reviewed = crate::persist::load_reviewed(&repo);
         let persisted_branch = git::checked_out_branch(&repo).ok().flatten();
         Self {
             repo,
@@ -910,6 +914,8 @@ impl App {
             select_anchor: None,
             comment_target: None,
             store,
+            reviewed,
+            viewed_pending: Vec::new(),
             persisted_branch,
             list_cursor: 0,
             picker_rows: Vec::new(),
@@ -1033,6 +1039,8 @@ impl App {
     /// Carry the review into a recovered app: comments, and a draft with its frozen diff.
     pub(crate) fn carry_authored_state_from(&mut self, old: &mut Self) {
         self.store = std::mem::take(&mut old.store);
+        self.reviewed = std::mem::take(&mut old.reviewed);
+        self.viewed_pending = std::mem::take(&mut old.viewed_pending);
         self.persisted_branch = old.persisted_branch.take();
         self.list_cursor = old.list_cursor;
         // The footer expansion is one global toggle, carried regardless of the recovered mode
@@ -1232,7 +1240,9 @@ impl App {
             return;
         }
         self.store = crate::persist::load(&self.repo);
+        self.reviewed = crate::persist::load_reviewed(&self.repo);
         self.persisted_branch = branch;
+        self.refresh_reviewed(None);
         self.clamp_list_cursor();
     }
 
@@ -1240,6 +1250,76 @@ impl App {
         if let Err(e) = crate::persist::save(&self.repo, &self.store) {
             logln!("comment persist failed: {e:#}");
             self.status = "could not save comments".to_string();
+        }
+    }
+
+    pub fn is_reviewed(&self, path: &str) -> bool {
+        self.reviewed.contains_key(path)
+    }
+
+    pub(crate) fn review_target(&self) -> Option<&str> {
+        if self.tab != Tab::Changes || self.mode != Mode::Normal {
+            return None;
+        }
+        match self.focus {
+            Focus::Files => self.current_entry().map(|entry| entry.path.as_str()),
+            Focus::Diff => self.diff_path.as_deref(),
+        }
+        .filter(|path| self.changeset.files.contains_key(*path))
+    }
+
+    pub fn toggle_reviewed(&mut self) {
+        let Some(path) = self.review_target().map(str::to_string) else { return };
+        let was_reviewed = self.is_reviewed(&path);
+        self.reviewed = crate::persist::load_reviewed(&self.repo);
+        let marked = if was_reviewed {
+            self.reviewed.remove(&path);
+            false
+        } else {
+            match crate::persist::reviewed_fingerprint(&self.repo, &path) {
+                Ok(fingerprint) => {
+                    self.reviewed.insert(path.clone(), fingerprint);
+                    true
+                }
+                Err(e) => {
+                    logln!("reviewed fingerprint failed: {e:#}");
+                    self.status = "could not mark file reviewed".into();
+                    return;
+                }
+            }
+        };
+        self.status = if marked { "file reviewed" } else { "file unreviewed" }.into();
+        if self.persist_reviewed()
+            && let Some(branch) = &self.persisted_branch
+            && let Some(config) = self.plugin_config()
+        {
+            self.viewed_pending.push(crate::forge::ViewedIntent {
+                branch: branch.clone(),
+                base: self.base.clone(),
+                config: config.clone(),
+                paths: vec![(path, marked)],
+            });
+        }
+    }
+
+    fn persist_reviewed(&mut self) -> bool {
+        if let Err(e) = crate::persist::save_reviewed(&self.repo, &self.reviewed) {
+            logln!("reviewed persist failed: {e:#}");
+            self.status = "could not save reviewed files".into();
+            return false;
+        }
+        true
+    }
+
+    fn refresh_reviewed(&mut self, touched: Option<&BTreeSet<String>>) {
+        let before = self.reviewed.len();
+        self.reviewed.retain(|path, fingerprint| {
+            touched.is_some_and(|paths| !git::covered(paths, path))
+                || crate::persist::reviewed_fingerprint(&self.repo, path)
+                    .is_ok_and(|current| current == *fingerprint)
+        });
+        if self.reviewed.len() != before {
+            self.persist_reviewed();
         }
     }
 
@@ -1279,6 +1359,8 @@ impl App {
     /// Reconcile a snapshot into the view: identity, then fallback, then clamp (Continuity).
     pub fn reconcile_world(&mut self, snapshot: crate::world::WorldSnapshot) {
         self.sync_persisted_branch();
+        self.reviewed = crate::persist::load_reviewed(&self.repo);
+        self.refresh_reviewed(snapshot.touched.as_ref());
         // The cursor keeps its target, else the open file, else the first file.
         let anchor = self.cursor_anchor();
         let open = self.diff_path.clone();
@@ -4768,6 +4850,10 @@ impl App {
                 .position(|&(a, band)| band == Do && a == A::NavigatorHide)
                 .unwrap_or(out.len());
             out.insert(at, (A::EditFile, Do));
+        }
+
+        if self.review_target().is_some() {
+            out.push((A::Reviewed, Do));
         }
 
         // An armed crossing leads, so the reviewer sees the next press leaves the file.

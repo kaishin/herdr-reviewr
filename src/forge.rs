@@ -1,4 +1,4 @@
-//! The read-only forge kernel: fetch input, per-forge dispatch, the shared snapshot, and GitHub.
+//! The forge kernel: fetch input, per-forge dispatch, snapshots, and explicit GitHub viewed marks.
 
 use std::path::Path;
 use std::process::Command;
@@ -335,7 +335,7 @@ fn classify_failure(stderr: &str, host: &str) -> GhError {
     }
 }
 
-/// Run one provider CLI read, mapping each failure into the provider's error type.
+/// Run one provider CLI call, mapping each failure into the provider's error type.
 pub(crate) fn run_provider<E>(
     cmd: Command,
     cancelled: &AtomicBool,
@@ -479,6 +479,174 @@ fn fetch_input_inner(
     Ok(PrFetchInput { repository, origin_repository, local })
 }
 
+/// An explicit local save, tied to the branch and validated config that authored it.
+#[derive(Debug)]
+pub(crate) struct ViewedIntent {
+    pub branch: String,
+    pub base: Option<String>,
+    pub config: crate::config::PluginConfig,
+    pub paths: Vec<(String, bool)>,
+}
+
+/// Mirror only to an open GitHub PR; local state never depends on this result.
+pub(crate) fn mirror_viewed(
+    repo: &Path,
+    intent: &ViewedIntent,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let input = verify_input(repo, intent.base.as_deref(), &intent.config)
+        .map_err(|error| format!("could not resolve PR: {error:?}"))?;
+    if input.local.branch.as_deref() != Some(intent.branch.as_str()) {
+        return Ok(());
+    }
+    let crate::git::RepositoryIdentity::Repository(repository) = &input.repository else {
+        return Ok(());
+    };
+    if repository.forge() != crate::git::Forge::GitHub {
+        return Ok(());
+    }
+    mirror_viewed_inner(repo, &input, repository, &intent.paths, cancelled).map_err(|error| {
+        match error {
+            GhError::NoGh => "gh CLI not found".into(),
+            GhError::NotAuthed(host) => format!("not signed in to {host}"),
+            GhError::NotFound(message) | GhError::LocalGit(message) | GhError::Other(message) => {
+                message
+            }
+        }
+    })
+}
+
+fn mirror_viewed_inner(
+    repo: &Path,
+    input: &PrFetchInput,
+    repository: &crate::git::RepoTarget,
+    paths: &[(String, bool)],
+    cancelled: &AtomicBool,
+) -> Result<(), GhError> {
+    let pinned = match input.local.pin_on(crate::git::Forge::GitHub) {
+        Some(pin) => match viewed_pr(repo, &pin.repo, pin.number, cancelled) {
+            Ok(Some(pr)) => Some((pr, &pin.repo)),
+            Ok(None) | Err(GhError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        },
+        None => None,
+    };
+    let (pr, target) = if let Some(pinned) = pinned {
+        pinned
+    } else {
+        let Some((number, target)) = lookup_pick(repo, input, repository, cancelled, true)? else {
+            return Ok(());
+        };
+        let Some(pr) = viewed_pr(repo, target, number, cancelled)? else { return Ok(()) };
+        (pr, target)
+    };
+    let (id, state) = pr;
+    if state != PrState::Open {
+        return Ok(());
+    }
+    for (path, viewed) in paths {
+        let mutation = if *viewed { "markFileAsViewed" } else { "unmarkFileAsViewed" };
+        let query = format!(
+            "mutation($id:ID!,$path:String!){{{mutation}(input:{{pullRequestId:$id,path:$path}}){{clientMutationId}}}}"
+        );
+        let response = graphql(
+            repo,
+            target.host(),
+            &query,
+            &[("id".into(), id.clone()), ("path".into(), path.clone())],
+            cancelled,
+        )?;
+        check_viewed_response(&response, target.host())?;
+        if !matches!(
+            response["data"][mutation].get("clientMutationId"),
+            Some(Value::Null | Value::String(_))
+        ) {
+            return Err(GhError::Other("GitHub viewed mutation returned no result".into()));
+        }
+    }
+    Ok(())
+}
+
+/// Fetch only identity and lifecycle, including for a pin in a different repository.
+fn viewed_pr(
+    repo: &Path,
+    target: &crate::git::RepoTarget,
+    number: u64,
+    cancelled: &AtomicBool,
+) -> Result<Option<(String, PrState)>, GhError> {
+    let query = format!(
+        "query($o:String!,$n:String!){{repository(owner:$o,name:$n){{pullRequest(number:{number}){{id state}}}}}}"
+    );
+    let response = graphql(
+        repo,
+        target.host(),
+        &query,
+        &[("o".into(), target.owner().into()), ("n".into(), target.name().into())],
+        cancelled,
+    )?;
+    check_viewed_response(&response, target.host())?;
+    let node = response["data"]["repository"]
+        .get("pullRequest")
+        .ok_or_else(|| GhError::Other("GitHub PR identity missing".into()))?;
+    if node.is_null() {
+        return Ok(None);
+    }
+    let id = node["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| GhError::Other("GitHub PR id missing".into()))?;
+    let state = match node["state"].as_str() {
+        Some("OPEN") => PrState::Open,
+        Some("CLOSED") => PrState::Closed,
+        Some("MERGED") => PrState::Merged,
+        _ => return Err(GhError::Other("GitHub PR state missing".into())),
+    };
+    Ok(Some((id.into(), state)))
+}
+
+/// A single FIFO worker keeps opposite toggles ordered, without waking an idle pane.
+pub(crate) struct ViewedWorker {
+    tx: Option<std::sync::mpsc::Sender<ViewedIntent>>,
+    cancelled: std::sync::Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ViewedWorker {
+    pub(crate) fn send(&self, intent: ViewedIntent) -> bool {
+        self.tx.as_ref().expect("live worker sender").send(intent).is_ok()
+    }
+
+    pub(crate) fn spawn(
+        repo: std::path::PathBuf,
+        results: crate::wake::Sender<Result<(), String>>,
+    ) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<ViewedIntent>();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
+        let handle = std::thread::spawn(move || {
+            while let Ok(intent) = rx.recv() {
+                if stop.load(std::sync::atomic::Ordering::Acquire) {
+                    break;
+                }
+                if results.send(mirror_viewed(&repo, &intent, &stop)).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { tx: Some(tx), cancelled, handle: Some(handle) }
+    }
+}
+
+impl Drop for ViewedWorker {
+    fn drop(&mut self) {
+        self.cancelled.store(true, std::sync::atomic::Ordering::Release);
+        self.tx.take();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Read GitHub for one already-derived input. Degradation stays in-band for the PR tab.
 #[must_use]
 pub fn fetch(repo: &Path, input: &PrFetchInput) -> PrView {
@@ -535,7 +703,8 @@ fn fetch_inner(
     {
         return Ok(view);
     }
-    let Some((number, detail_repo)) = lookup_pick(repo, input, repository, cancelled)? else {
+    let Some((number, detail_repo)) = lookup_pick(repo, input, repository, cancelled, false)?
+    else {
         return Ok(PrView::NoPr);
     };
     Ok(read_pr(repo, input, detail_repo, number, cancelled)?.unwrap_or(PrView::NoPr))
@@ -583,6 +752,7 @@ fn lookup_pick<'a>(
     input: &'a PrFetchInput,
     repository: &'a crate::git::RepoTarget,
     cancelled: &AtomicBool,
+    open_only: bool,
 ) -> Result<Option<(u64, &'a crate::git::RepoTarget)>, GhError> {
     let names = input.local.head_names();
     if names.is_empty() {
@@ -598,10 +768,13 @@ fn lookup_pick<'a>(
             name: queried.name(),
             cancelled,
         };
-        let assoc = branch_lookup(&target, queried, heads, &names)?;
-        Ok(resolve_pick(repo, &assoc, head)
-            .map_err(|error| GhError::LocalGit(error.0))?
-            .map(|number| (number, queried)))
+        let assoc = branch_lookup(&target, queried, heads, &names, open_only)?;
+        let number = if open_only {
+            newest_by(&assoc.open, |pr| &pr.created_at)
+        } else {
+            resolve_pick(repo, &assoc, head).map_err(|error| GhError::LocalGit(error.0))?
+        };
+        Ok(number.map(|number| (number, queried)))
     };
     if let Some(pick) = pick_in(repository)? {
         return Ok(Some(pick));
@@ -696,6 +869,7 @@ fn branch_lookup(
     queried: &crate::git::RepoTarget,
     heads: &[crate::git::Head],
     names: &[String],
+    open_only: bool,
 ) -> Result<Association, GhError> {
     let q = build_branch_query(names.len());
     let mut vars = vec![
@@ -706,6 +880,16 @@ fn branch_lookup(
         vars.push((format!("b{i}"), name.clone()));
     }
     let v = graphql(target.repo, target.host, &q, &vars, target.cancelled)?;
+    if open_only {
+        check_viewed_response(&v, target.host)?;
+        for i in 0..names.len() {
+            for key in [format!("o{i}"), format!("h{i}")] {
+                if !v["data"]["repository"][key]["nodes"].is_array() {
+                    return Err(GhError::Other("GitHub branch lookup missing PRs".into()));
+                }
+            }
+        }
+    }
     Ok(parse_branch_lookup(&v, names.len(), queried, heads))
 }
 
@@ -878,6 +1062,24 @@ fn graphql(
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = gh(repo, host, &arg_refs, cancelled)?;
     serde_json::from_str(&out).map_err(|e| GhError::Other(e.to_string()))
+}
+
+fn check_viewed_response(value: &Value, host: &str) -> Result<(), GhError> {
+    if let Some(errors) = value.get("errors")
+        && errors.as_array().is_none_or(|errors| !errors.is_empty())
+    {
+        let message = format!("GitHub GraphQL: {errors}");
+        return Err(
+            if errors.as_array().is_some_and(|errors| {
+                errors.iter().any(|error| error["type"].as_str() == Some("NOT_FOUND"))
+            }) {
+                GhError::NotFound(message)
+            } else {
+                classify_failure(&message, host)
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Page out every shown thread's comments, or fail so the last good view stays.
@@ -1288,6 +1490,103 @@ pub(crate) fn parse_iso(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires an isolated environment without host gh"]
+    fn explicit_viewed_toggles_are_fifo_and_never_retarget_after_a_checkout() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        const NAME: &str =
+            "forge::tests::explicit_viewed_toggles_are_fifo_and_never_retarget_after_a_checkout";
+        if std::env::var_os("FAKE_GH_VIEWED_DIR").is_none() {
+            assert!(!crate::proc::on_path("gh"), "run in an environment without host gh");
+            let dir = tempfile::tempdir().unwrap();
+            let gh = dir.path().join("gh");
+            fs::write(&gh, include_str!("../tests/fixtures/fake_gh_viewed.py")).unwrap();
+            fs::set_permissions(gh, fs::Permissions::from_mode(0o755)).unwrap();
+            let path = std::env::join_paths(
+                std::iter::once(dir.path().to_path_buf())
+                    .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+            )
+            .unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--ignored", "--nocapture"])
+                .env("FAKE_GH_VIEWED_DIR", dir.path())
+                .env("PATH", path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let dir = std::path::PathBuf::from(std::env::var_os("FAKE_GH_VIEWED_DIR").unwrap());
+        fs::write(
+            dir.join("responses.json"),
+            serde_json::json!({
+                "lookup": {"me/widgets": {"o": [{"number": 1, "state": "OPEN",
+                    "headRefName": "main", "isCrossRepository": false}]}},
+                "detail": {"me/widgets#1": {"id": "PR_one", "state": "OPEN"}},
+                "delays": {"markFileAsViewed": 0.15},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (repo, git) = crate::test_support::test_repo();
+        fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["remote", "add", "origin", "https://github.com/me/widgets.git"]);
+        fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+        let mut app =
+            crate::app::App::new(repo.path().into(), crate::model::Scope::Uncommitted, None);
+        app.reload().unwrap();
+        app.toggle_reviewed();
+        app.toggle_reviewed();
+        assert!(!app.is_reviewed("a.txt"));
+        let wake = crate::wake::Wake::new().unwrap();
+        let (tx, rx) = crate::wake::channel(&wake.waker());
+        let worker = ViewedWorker::spawn(repo.path().into(), tx);
+        for intent in std::mem::take(&mut app.viewed_pending) {
+            assert!(worker.send(intent));
+        }
+        for _ in 0..2 {
+            rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        }
+        let calls = fs::read_to_string(dir.join("calls.jsonl")).unwrap();
+        let completed: Vec<String> = fs::read_to_string(dir.join("completed.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(completed, ["markFileAsViewed", "unmarkFileAsViewed"]);
+
+        app.toggle_reviewed();
+        let intent = app.viewed_pending.pop().unwrap();
+        git(&["switch", "-qc", "other"]);
+        assert!(worker.send(intent));
+        rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        assert_eq!(fs::read_to_string(dir.join("calls.jsonl")).unwrap(), calls);
+        git(&["switch", "-q", "main"]);
+        fs::write(repo.path().join("a.txt"), "three\n").unwrap();
+        app.reload().unwrap();
+        assert!(!app.is_reviewed("a.txt"));
+        assert!(app.viewed_pending.is_empty(), "content invalidation is local-only");
+        let reviewed =
+            crate::persist::path_for(repo.path()).unwrap().unwrap().with_file_name("reviewed.json");
+        fs::remove_file(&reviewed).unwrap();
+        fs::create_dir(reviewed).unwrap();
+        app.toggle_reviewed();
+        assert_eq!(app.status, "could not save reviewed files");
+        assert!(app.viewed_pending.is_empty(), "a failed local save queues no remote write");
+        drop(worker);
+    }
 
     #[test]
     fn merge_surfaces_only_conflicts_and_blocked() {

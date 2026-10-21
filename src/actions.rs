@@ -1,7 +1,7 @@
 //! The plugin actions and the `auto-open` hook, run as `--action <name>`, one workspace lock each.
 
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -19,15 +19,19 @@ use crate::proc::program_name;
 pub enum NonUiRun {
     /// `--action <name>`; a flag that ends argv names the empty action.
     Action(String),
+    MarkReviewed(Vec<OsString>),
 }
 
 impl NonUiRun {
     /// The non-UI run `args` asks for, anywhere in argv, or `None` for the review UI.
     pub fn from_args<S: AsRef<OsStr>>(args: &[S]) -> Option<Self> {
         let args: Vec<&OsStr> = args.iter().map(AsRef::as_ref).collect();
-        let at = args.iter().position(|arg| *arg == "--action")?;
-        let name = args.get(at + 1).map(|name| name.to_string_lossy().into_owned());
-        Some(Self::Action(name.unwrap_or_default()))
+        if let Some(at) = args.iter().position(|arg| *arg == "--action") {
+            let name = args.get(at + 1).map(|name| name.to_string_lossy().into_owned());
+            return Some(Self::Action(name.unwrap_or_default()));
+        }
+        let at = args.iter().position(|arg| *arg == "--mark-reviewed")?;
+        Some(Self::MarkReviewed(args[at + 1..].iter().map(OsString::from).collect()))
     }
 }
 

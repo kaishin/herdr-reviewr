@@ -56,6 +56,7 @@ impl Repo {
         repo.git(&["config", "init.defaultBranch", "no-such-default"]);
         // A previous app on a recycled temp path may have saved comments for this branch.
         if let Ok(Some(path)) = herdr_reviewr::persist::path_for(repo.path()) {
+            let _ = std::fs::remove_file(path.with_file_name("reviewed.json"));
             let _ = std::fs::remove_file(path);
         }
         repo

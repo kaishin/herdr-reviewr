@@ -1576,6 +1576,8 @@ fn render_file_list(frame: &mut Frame, app: &App, area: Rect) {
                             annotation,
                             name: &row.name,
                             ignored: row.ignored,
+                            reviewed: app.tab == Tab::Changes
+                                && app.is_reviewed(&app.entries[*index].path),
                             emphasis: &[],
                         },
                         width,
@@ -1595,20 +1597,25 @@ struct FileRowSpec<'a> {
     annotation: Option<&'a ChangedFile>,
     name: &'a str,
     ignored: bool,
+    reviewed: bool,
     emphasis: &'a [(u32, u32)],
 }
 
 /// A file row: `<indent><marker> <name> <stats>`, a long name eliding its head.
 fn file_row_item(row: &FileRowSpec<'_>, width: usize, on: Fill, p: &Palette) -> ListItem<'static> {
-    let FileRowSpec { indent, annotation, name, ignored, emphasis } = *row;
+    let FileRowSpec { indent, annotation, name, ignored, reviewed, emphasis } = *row;
+    let reviewed_mark = if reviewed { "✓ " } else { "" };
     let marker = annotation.map_or(String::new(), |a| format!("{} ", a.kind.marker()));
     let (additions, deletions) = annotation.map_or((0, 0), |a| (a.additions, a.deletions));
     let stats = stats_str(additions, deletions);
     let gap = if stats.is_empty() { 0 } else { 2 };
-    let fixed = indent.width() + marker.width() + stats.width() + gap;
+    let fixed = indent.width() + reviewed_mark.width() + marker.width() + stats.width() + gap;
     let shown = elide_head(name, width.saturating_sub(fixed).max(1));
 
     let mut spans = vec![Span::styled(indent.to_string(), text_style(p, on))];
+    if reviewed {
+        spans.push(Span::styled(reviewed_mark, Style::default().fg(p.ink(Ink::Success, on))));
+    }
     if let Some(a) = annotation {
         spans.push(Span::styled(marker, Style::default().fg(kind_color(p, a.kind, on))));
     }
@@ -2849,6 +2856,14 @@ fn action_key_label(app: &App, action: FooterAction) -> (String, String) {
             return (hint(K::QuitDiscard), format!("quit ({} pending)", app.unsent()));
         }
         A::Clear => (hint(K::Clear), "clear"),
+        A::Reviewed => (
+            hint(K::Reviewed),
+            if app.review_target().is_some_and(|path| app.is_reviewed(path)) {
+                "mark unreviewed"
+            } else {
+                "mark reviewed"
+            },
+        ),
         A::Save => ("enter".into(), "save"),
         A::Newline => ("shift+enter".into(), "newline"),
         A::Cancel | A::ClosePicker => ("esc".into(), "cancel"),
@@ -3936,6 +3951,7 @@ fn render_search_results(
                         annotation: app.changed_annotation(path),
                         name: path,
                         ignored: false,
+                        reviewed: false,
                         emphasis: &[],
                     },
                     width,
@@ -3956,6 +3972,7 @@ fn render_search_results(
                         annotation: app.changed_annotation(&hit.path),
                         name: &hit.path,
                         ignored: false,
+                        reviewed: false,
                         emphasis: &hit.spans,
                     },
                     width,
