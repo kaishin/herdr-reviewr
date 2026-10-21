@@ -6,6 +6,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Small edits in long files render correctly**: the 50,000-row diff limit counts shared context once, not once per side. The combined 2,000,000-byte cap and whole-file limits remain in place.
+
 ## [0.49.0] — 2026-10-21
 
 ### Changed
