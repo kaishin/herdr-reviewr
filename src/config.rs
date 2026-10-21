@@ -995,14 +995,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            "[keybindings]\ncomment = [\"c\", \"ㅊ\"]\nsend = [\"x\"]\n",
+            "[keybindings]\ncomment = [\"c\", \"ㅊ\"]\nsend = [\"a\"]\n",
         )
         .unwrap();
         let config = super::plugin_config_in(dir.path()).unwrap();
         let keymap = config.keymap();
         assert_eq!(keymap.action_for(Key::plain('ㅊ')), Some(Action::Comment));
         assert_eq!(keymap.action_for(Key::plain('c')), Some(Action::Comment));
-        assert_eq!(keymap.action_for(Key::plain('x')), Some(Action::Send));
+        assert_eq!(keymap.action_for(Key::plain('a')), Some(Action::Send));
         assert_eq!(keymap.action_for(Key::plain('s')), None, "a binding replaces its defaults");
         assert_eq!(keymap.action_for(Key::plain('S')), None);
         assert_eq!(keymap.action_for(Key::plain('v')), Some(Action::Select), "unbound keep theirs");

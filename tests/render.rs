@@ -301,10 +301,10 @@ fn the_fold_hint_names_the_expand_binding() {
 
     // A rebound `expand` renames the fold label and the footer hint alike.
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"x\"]\n").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "[keybindings]\nexpand = [\"a\"]\n").unwrap();
     app.set_plugin_config(herdr_reviewr::config::plugin_config_in(dir.path()).unwrap());
     let out = render(&app);
-    assert!(out.contains("x expand"), "the rebound key names the hint:\n{out}");
+    assert!(out.contains("a expand"), "the rebound key names the hint:\n{out}");
     assert!(!out.contains("→ expand"), "the freed arrow leaves the hint");
 }
 
@@ -1522,12 +1522,12 @@ fn rebound_app(keybindings: &str) -> App {
 
 #[test]
 fn hints_show_the_first_bound_key() {
-    let app = rebound_app("comment = [\"ㅊ\", \"c\"]\ntab-pr = [\"x\"]\n");
+    let app = rebound_app("comment = [\"ㅊ\", \"c\"]\ntab-pr = [\"a\"]\n");
     let out = render(&app);
     let footer = footer_line(&out);
     // A wide hint key spans two buffer cells, so the dump carries a placeholder space after it.
     assert!(footer.contains("ㅊ  comment"), "the hint is the first bound key:\n{footer}");
-    assert!(out.contains("x PR"), "the header tab hint follows its binding:\n{out}");
+    assert!(out.contains("a PR"), "the header tab hint follows its binding:\n{out}");
     assert!(!out.contains("3 PR"), "the replaced digit is gone:\n{out}");
 }
 

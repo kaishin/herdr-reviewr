@@ -66,6 +66,98 @@ fn edited_repo() -> Repo {
     r
 }
 
+#[test]
+fn reviewed_files_persist_per_branch_and_reset_when_their_content_changes() {
+    let r = edited_repo();
+    let mut app = app_on(&r);
+    let keymap = Keymap::default();
+    app.focus = Focus::Files;
+    assert!(!app.is_reviewed("a.rs"), "opening a file does not mark it reviewed");
+    let place = (app.file_cursor, app.file_scroll, app.diff_cursor, app.diff_scroll, app.focus);
+
+    press(&mut app, &keymap, KeyCode::Char('x'));
+    assert!(app.is_reviewed("a.rs"));
+    assert_eq!(
+        (app.file_cursor, app.file_scroll, app.diff_cursor, app.diff_scroll, app.focus),
+        place,
+        "marking never moves the view"
+    );
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+    terminal.draw(|frame| herdr_reviewr::ui::render(frame, &app)).unwrap();
+    assert!(terminal.backend().buffer().content.iter().any(|cell| cell.symbol() == "✓"));
+
+    comment_on(&mut app, '+', "note");
+    app.clear_comments();
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    assert!(app.store.is_empty());
+    assert!(app.is_reviewed("a.rs"), "reopening and clearing comments keep review progress");
+    app.set_scope(Scope::Branch).unwrap();
+    assert!(app.is_reviewed("a.rs"), "changing scope alone keeps the mark");
+    app.set_scope(Scope::Uncommitted).unwrap();
+
+    r.git(&["checkout", "-q", "-b", "other"]);
+    app.reload().unwrap();
+    assert!(!app.is_reviewed("a.rs"), "a different branch starts unreviewed");
+    r.git(&["checkout", "-q", "main"]);
+    app.reload().unwrap();
+    assert!(app.is_reviewed("a.rs"), "returning to the branch restores the mark");
+
+    r.write("a.rs", "alpha\nZETA\ngamma\ndelta\nepsilon\n");
+    app.reload().unwrap();
+    assert!(!app.is_reviewed("a.rs"), "even a same-length edit resets the mark");
+    r.write("a.rs", "alpha\nBETA\ngamma\ndelta\nepsilon\n");
+    let mut app = App::new(r.path_buf(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    assert!(!app.is_reviewed("a.rs"), "an invalidated mark does not return after a restart");
+    press(&mut app, &keymap, KeyCode::Char('x'));
+    assert!(app.is_reviewed("a.rs"));
+    press(&mut app, &keymap, KeyCode::Char('x'));
+    assert!(!app.is_reviewed("a.rs"), "the same key unmarks the file");
+}
+
+#[test]
+fn agents_can_mark_reviewed_without_a_terminal_and_refresh_keeps_place_and_comments() {
+    let r = edited_repo();
+    r.write("src/other.rs", "other\n");
+    let repo = herdr_reviewr::git::toplevel(r.path()).unwrap();
+    let mut app = App::new(repo.clone(), Scope::Uncommitted, None);
+    app.reload().unwrap();
+    app.select_file(file_row(&app, "a.rs")).unwrap();
+    comment_on(&mut app, '+', "keep this comment");
+    let place = (app.file_cursor, app.file_scroll, app.diff_cursor, app.diff_scroll, app.focus);
+    let config = tempfile::tempdir().unwrap();
+    for _ in 0..2 {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_herdr-reviewr"))
+            .args(["--mark-reviewed", "../a.rs", "./other.rs"])
+            .current_dir(repo.join("src"))
+            .env("HERDR_PLUGIN_CONFIG_DIR", config.path())
+            .env("HERDR_BIN_PATH", "false")
+            .env_remove("HERDR_WORKSPACE_ID")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("HERDR_SOCKET_PATH")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "reviewr: marked 2 files reviewed\n");
+    }
+    assert!(!app.is_reviewed("a.rs"), "agent writes need a refresh in the open pane");
+    app.reload().unwrap();
+    assert!(app.is_reviewed("a.rs"));
+    assert!(app.is_reviewed("src/other.rs"));
+    assert_eq!(app.store.get(0).unwrap().text, "keep this comment");
+    assert_eq!(
+        (app.file_cursor, app.file_scroll, app.diff_cursor, app.diff_scroll, app.focus),
+        place,
+        "refreshing the marks does not move the view"
+    );
+    app.toggle_reviewed();
+    let mut reopened = App::new(repo, Scope::Uncommitted, None);
+    reopened.reload().unwrap();
+    assert!(!reopened.is_reviewed("a.rs"));
+    assert!(reopened.is_reviewed("src/other.rs"), "unmarking keeps the agent's other marks");
+}
+
 /// Reveal and bound the diff scroll as the loop does, one display row per row.
 fn clamp(app: &mut App, viewport: usize) {
     let heights = vec![1usize; app.visible.len()];
@@ -3843,7 +3935,7 @@ fn rebinding_down_frees_the_arrow_and_tab_stays_fixed() {
     let r = edited_repo();
     let mut app = app_on(&r);
     let keymap = Keymap::resolve(&[
-        (Action::Down, vec![Key::plain('x')]),
+        (Action::Down, vec![Key::plain('a')]),
         (Action::Up, vec![Key::plain('Z')]),
     ])
     .unwrap();
@@ -3854,7 +3946,7 @@ fn rebinding_down_frees_the_arrow_and_tab_stays_fixed() {
     press(&mut app, &keymap, KeyCode::Down);
     assert_eq!(app.diff_cursor, 0, "the freed down arrow answers nothing");
 
-    press(&mut app, &keymap, KeyCode::Char('x'));
+    press(&mut app, &keymap, KeyCode::Char('a'));
     assert!(app.diff_cursor > 0, "the bound key moves the cursor");
     press(&mut app, &keymap, KeyCode::Char('Z'));
     assert_eq!(app.diff_cursor, 0, "the bound up key moves back");
@@ -4184,12 +4276,12 @@ fn the_comments_list_acts_through_the_same_bindings() {
     let r = edited_repo();
     let mut app = app_on(&r);
     comment_on(&mut app, '+', "note");
-    let keymap = Keymap::resolve(&[(Action::Delete, vec![Key::plain('x')])]).unwrap();
+    let keymap = Keymap::resolve(&[(Action::Delete, vec![Key::plain('a')])]).unwrap();
 
     app.open_list();
     press(&mut app, &keymap, KeyCode::Char('d'));
     assert_eq!(app.store.len(), 1, "the replaced default is inert in the list too");
-    press(&mut app, &keymap, KeyCode::Char('x'));
+    press(&mut app, &keymap, KeyCode::Char('a'));
     assert!(app.store.is_empty(), "the rebound `delete` acts on the highlighted row");
 }
 
@@ -5804,11 +5896,11 @@ fn the_picker_moves_by_key_and_a_digit_past_the_last_row_is_inert() {
 fn the_picker_follows_a_down_rebind_like_the_main_view() {
     let r = edited_repo();
     let mut app = app_with_picker(&r);
-    let keymap = Keymap::resolve(&[(Action::Down, vec![Key::plain('x')])]).unwrap();
+    let keymap = Keymap::resolve(&[(Action::Down, vec![Key::plain('a')])]).unwrap();
     let area = Rect::new(0, 0, 80, 24);
     assert_eq!(app.picker_cursor, 0);
 
-    handle_key(&mut app, KeyEvent::from(KeyCode::Char('x')), area, &keymap).unwrap();
+    handle_key(&mut app, KeyEvent::from(KeyCode::Char('a')), area, &keymap).unwrap();
     assert_eq!(app.picker_cursor, 1, "the rebound key moves the highlight");
     handle_key(&mut app, KeyEvent::from(KeyCode::Down), area, &keymap).unwrap();
     assert_eq!(app.picker_cursor, 1, "the freed arrow no longer moves it");
