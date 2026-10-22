@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.50.0] — 2026-10-22
+
 ### Added
 - **Mark files reviewed with `x` in Changes.** Marks are local to the checkout and branch, persist beside comments, and reset when the file's contents change. Clearing comments keeps review progress.
 - **`x` is a new default key.** Configs already using it must rebind `reviewed`.
