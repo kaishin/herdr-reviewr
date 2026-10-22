@@ -163,7 +163,24 @@ The usual editing keys work: arrows, `Home` / `End`, `Ctrl+A` / `Ctrl+E`, `Alt+b
 **Mouse:** drag to copy, double-click a word, triple-click a line. Click or drag line numbers to
 comment. Click files, tabs, and links. Scroll with the wheel.
 
-### Agent command
+### Agent commands
+
+Focus a file in an **existing** reviewr pane for this checkout:
+
+```bash
+herdr-reviewr --focus-file src/foo.rs
+```
+
+Paths are relative to the current directory (absolute paths inside the checkout also work).
+In Herdr, the target must be in the caller's workspace on the same server. Outside Herdr,
+there must be exactly one standalone reviewr for this checkout. The command never opens or
+restarts panes, and fails if no target exists or more than one matches.
+
+The pane selects and reveals the file in the sidebar. If it is in the current **Changes**
+scope, that view stays open; otherwise the pane switches to **All files**, including ignored
+files. Deleted files can be opened from Changes. Active drafts, overlays, and selections
+refuse navigation; saved comments stay intact. A timeout reports an unknown outcome and
+does not retry. Requests that expire while an editor holds the pane do not navigate later.
 
 From the checkout, mark files reviewed without opening the UI:
 

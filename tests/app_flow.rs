@@ -67,6 +67,77 @@ fn edited_repo() -> Repo {
 }
 
 #[test]
+fn external_focus_reveals_changes_and_falls_back_to_ignored_all_files_without_losing_comments() {
+    let r = Repo::init();
+    r.write("src/a.rs", "old\n");
+    r.write("src/deleted.rs", "gone\n");
+    r.write("unchanged.rs", "same\n");
+    r.write(".gitignore", "build/\n");
+    r.commit_all("init");
+    r.write("src/a.rs", "new\n");
+    std::fs::remove_file(r.path().join("src/deleted.rs")).unwrap();
+    r.write("build/nested/output.rs", "ignored\n");
+    let mut app = app_on(&r);
+    app.focus_file("src/a.rs").unwrap();
+    comment_on(&mut app, '+', "keep me");
+    app.focus = Focus::Files;
+    app.file_cursor = app.file_rows.iter().position(|row| row.dir_path() == Some("src")).unwrap();
+    app.collapse_dir();
+    app.navigator_hidden = true;
+
+    app.focus_file("src/deleted.rs").unwrap();
+    assert_eq!(app.tab, herdr_reviewr::app::Tab::Changes);
+    assert_eq!(app.current_entry().unwrap().path, "src/deleted.rs");
+    assert_eq!(app.diff_path.as_deref(), Some("src/deleted.rs"));
+    assert_eq!(app.focus, Focus::Files);
+    assert!(!app.navigator_hidden);
+    assert!(app.reveal_files);
+
+    app.focus_file("build/nested/output.rs").unwrap();
+    assert_eq!(app.tab, herdr_reviewr::app::Tab::AllFiles);
+    assert_eq!(app.current_entry().unwrap().path, "build/nested/output.rs");
+    assert_eq!(app.diff_path.as_deref(), Some("build/nested/output.rs"));
+    assert!(app.current_entry().unwrap().ignored);
+    assert_eq!(app.store.len(), 1);
+    assert_eq!(app.store.get(0).unwrap().text, "keep me");
+    app.set_tab(herdr_reviewr::app::Tab::Pr).unwrap();
+    app.focus_file("unchanged.rs").unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("unchanged.rs"));
+    assert!(
+        app.file_rows.iter().any(|row| {
+            row.file_index()
+                .is_some_and(|index| app.entries[index].path == "build/nested/output.rs")
+        }),
+        "returning from PR keeps the expanded ignored directory"
+    );
+}
+
+#[test]
+fn external_focus_refuses_invalid_paths_and_covered_drafts_without_changing_place() {
+    let r = edited_repo();
+    r.write("b.rs", "other\n");
+    let mut app = app_on(&r);
+    app.focus_file("a.rs").unwrap();
+    let place = (app.tab, app.file_cursor, app.diff_path.clone(), app.navigator_hidden);
+    assert!(app.focus_file("missing.rs").is_err());
+    assert!(app.focus_file("../outside.rs").is_err());
+    assert_eq!((app.tab, app.file_cursor, app.diff_path.clone(), app.navigator_hidden), place);
+    app.focus = Focus::Diff;
+    app.start_comment();
+    typed(&mut app, "unfinished");
+    app.picker_over = app.mode.clone();
+    app.mode = Mode::Picker;
+    assert!(app.focus_file("b.rs").is_err());
+    assert_eq!(app.input, "unfinished");
+    assert!(matches!(app.picker_over, Mode::Composing { .. }));
+    assert_eq!((app.tab, app.file_cursor, app.diff_path.clone(), app.navigator_hidden), place);
+    app.close_picker();
+    app.cancel_comment();
+    app.focus_file("b.rs").unwrap();
+    assert_eq!(app.current_entry().unwrap().path, "b.rs");
+}
+
+#[test]
 fn reviewed_files_persist_per_branch_and_reset_when_their_content_changes() {
     let r = edited_repo();
     let mut app = app_on(&r);

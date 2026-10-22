@@ -5,6 +5,7 @@ pub mod app;
 pub mod azure_devops;
 pub mod browser;
 pub mod config;
+pub mod control;
 pub mod diff;
 pub mod editor;
 pub mod export;
@@ -831,6 +832,10 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
     #[cfg(unix)]
     wake.sys().watch_resizes()?;
     let waker = wake.waker();
+    let (control_tx, control_rx) = crate::wake::channel(&waker);
+    let _control = crate::control::Listener::start(&app.repo, control_tx)
+        .inspect_err(|error| logln!("file control unavailable: {error}"))
+        .ok();
     // Probes and forge reads run on workers.
     let (probe_tx, probe_rx) = crate::wake::channel::<(
         u64,
@@ -1075,10 +1080,25 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                 pacer.set_visible(visible);
                 watch.set_visible(visible);
             }
+            let mut controlled = false;
+            while let Ok(request) = control_rx.try_recv() {
+                if request.wants_focus() && !request.expired() {
+                    reconcile_plugin_config(
+                        app,
+                        cfg,
+                        area,
+                        &mut config_epoch,
+                        &recovery_tx,
+                        &mut recovery_inflight,
+                        &mut pr,
+                    );
+                }
+                controlled |= request.apply(app);
+            }
             // What the screen shows beyond the watcher's defaults: ignored entries, a local base.
             watch.show(app.shown_ignored());
             watch.set_refs(app.watched_refs());
-            if heard {
+            if heard || controlled {
                 continue;
             }
 

@@ -3256,6 +3256,60 @@ impl App {
         Ok(())
     }
 
+    /// An external author's explicit file pick; never dismiss authored input (Comments survive).
+    pub fn focus_file(&mut self, path: &str) -> Result<()> {
+        self.ensure_config_ready()?;
+        anyhow::ensure!(
+            self.mode == Mode::Normal
+                && !self.gesture_active()
+                && self.select_anchor.is_none()
+                && !self.confirming_quit,
+            "finish the active draft, overlay, or selection before focusing a file"
+        );
+        let changes = self.tab == Tab::Changes && self.changeset.files.contains_key(path);
+        let mut parents = Vec::new();
+        let mut dir = path;
+        while let Some((parent, _)) = dir.rsplit_once('/') {
+            parents.push(parent);
+            dir = parent;
+        }
+        let entries = if changes {
+            None
+        } else {
+            let mut input = self.world_input();
+            input.tab = Tab::AllFiles;
+            input.toggled_dirs.clone_from(if self.active_file_tab == Tab::AllFiles {
+                &self.toggled_dirs
+            } else {
+                &self.stash.toggled_dirs
+            });
+            input.toggled_dirs.extend(parents.iter().map(|p| (*p).to_owned()));
+            let entries = crate::world::all_files_entries(&input, &self.changeset.files)?;
+            anyhow::ensure!(
+                self.repo.join(path).is_file()
+                    && entries.iter().any(|e| e.path == path && !e.is_dir),
+                "file is not in All files: {path}"
+            );
+            Some(entries)
+        };
+        if !changes {
+            self.set_tab(Tab::AllFiles)?;
+        }
+        for parent in parents {
+            self.set_dir_expanded(parent, true);
+        }
+        if let Some(entries) = entries {
+            self.entries = entries;
+        }
+        self.rebuild_file_rows();
+        let row = self
+            .file_row_of_path(path)
+            .ok_or_else(|| anyhow::anyhow!("file is not visible: {path}"))?;
+        self.navigator_hidden = false;
+        self.select_file(row)?;
+        Ok(())
+    }
+
     /// Toggle the directory under the cursor and rebuild the tree.
     fn toggle_dir(&mut self) {
         let Some(path) = self.dir_under_cursor() else { return };

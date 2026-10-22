@@ -20,6 +20,7 @@ pub enum NonUiRun {
     /// `--action <name>`; a flag that ends argv names the empty action.
     Action(String),
     MarkReviewed(Vec<OsString>),
+    FocusFile(Vec<OsString>),
 }
 
 impl NonUiRun {
@@ -29,6 +30,12 @@ impl NonUiRun {
         if let Some(at) = args.iter().position(|arg| *arg == "--action") {
             let name = args.get(at + 1).map(|name| name.to_string_lossy().into_owned());
             return Some(Self::Action(name.unwrap_or_default()));
+        }
+        if args
+            .iter()
+            .any(|arg| *arg == "--focus-file" || arg.to_string_lossy().starts_with("--focus-file="))
+        {
+            return Some(Self::FocusFile(args.iter().map(OsString::from).collect()));
         }
         let at = args.iter().position(|arg| *arg == "--mark-reviewed")?;
         Some(Self::MarkReviewed(args[at + 1..].iter().map(OsString::from).collect()))
