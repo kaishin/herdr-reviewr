@@ -87,9 +87,11 @@ fn paint_header<W: Write>(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::HashSet;
     use std::rc::Rc;
 
     use ratatui::{TerminalOptions, Viewport};
+    use unicode_width::UnicodeWidthChar;
 
     use super::*;
     use crate::app::{Mode, Tab};
@@ -166,6 +168,65 @@ mod tests {
         out
     }
 
+    fn unlinked_writes(text: &str) -> HashSet<Position> {
+        let mut chars = text.chars();
+        let mut cursor = Position::ORIGIN;
+        let mut saved = cursor;
+        let mut linked = false;
+        let mut writes = HashSet::new();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                match chars.next().unwrap() {
+                    '[' => {
+                        let mut params = String::new();
+                        let command = loop {
+                            let ch = chars.next().unwrap();
+                            if ('@'..='~').contains(&ch) {
+                                break ch;
+                            }
+                            params.push(ch);
+                        };
+                        match command {
+                            'H' => {
+                                let (row, col) = params.split_once(';').unwrap();
+                                cursor = Position::new(
+                                    col.parse::<u16>().unwrap() - 1,
+                                    row.parse::<u16>().unwrap() - 1,
+                                );
+                            }
+                            'm' | 'h' | 'l' | 'J' => {}
+                            _ => panic!("unexpected CSI {params}{command}"),
+                        }
+                    }
+                    ']' => {
+                        let mut osc = String::new();
+                        loop {
+                            let ch = chars.next().unwrap();
+                            if ch == '\x1b' {
+                                assert_eq!(chars.next(), Some('\\'));
+                                break;
+                            }
+                            osc.push(ch);
+                        }
+                        let url = osc.strip_prefix("8;;").expect("OSC8 link command");
+                        linked = !url.is_empty();
+                    }
+                    '7' => saved = cursor,
+                    '8' => cursor = saved,
+                    command => panic!("unexpected escape {command:?}"),
+                }
+            } else {
+                assert!(!ch.is_control(), "unexpected control {ch:?}");
+                let width = ch.width().unwrap_or(0) as u16;
+                if !linked {
+                    writes.extend((cursor.x..cursor.x + width).map(|x| Position::new(x, cursor.y)));
+                }
+                cursor.x += width;
+            }
+        }
+        writes
+    }
+
     #[test]
     fn compact_pr_chip_has_osc8_metadata_even_when_only_its_url_changes() {
         let output = Output::default();
@@ -217,12 +278,20 @@ mod tests {
         ];
         for change in changes {
             let mut app = pr_app();
+            let (chip, _) = ui::pr_header_link(terminal.get_frame().area(), &app).unwrap();
             renderer.draw(&mut terminal, &app).unwrap();
             output.take();
             change(&mut app);
             renderer.draw(&mut terminal, &app).unwrap();
             let bytes = output.take();
-            assert!(bytes.contains("\x1b]8;;\x1b\\"), "remove old cell metadata");
+            let writes = unlinked_writes(&bytes);
+            for x in chip.left()..chip.right() {
+                assert!(
+                    writes.contains(&Position::new(x, chip.y)),
+                    "former chip cell ({x}, {}) must be rewritten outside a hyperlink",
+                    chip.y,
+                );
+            }
             assert!(!bytes.contains("\x1b]8;;https://"), "no stale or unsafe link");
         }
     }
