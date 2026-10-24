@@ -6,8 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.51.0] — 2026-10-24
+
 ### Added
 - **Agents can run `herdr-reviewr --focus-file <file>`** to select a cwd-relative file in an existing same-checkout review pane, scoped to their Herdr workspace and server. The command never opens panes and refuses missing or ambiguous targets and active drafts, overlays, or selections. It keeps the current Changes scope when the file belongs there, otherwise opens All files (ignored files included), without changing saved comments. Local authenticated requests expire rather than navigate after an editor-blocked timeout; no automatic retries or remote operations.
+- **The PR chip is a terminal hyperlink.** Open it in the viewing Herdr client's browser, including when reviewr runs on a remote host. The `o` key still opens the PR on the host running reviewr.
 
 ## [0.50.0] — 2026-10-22
 
