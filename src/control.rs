@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::{app::App, wake};
+use crate::{
+    app::{App, FocusFileInput, PreparedFocusFile},
+    wake,
+};
 
 const BOUND: Duration = Duration::from_secs(2);
 const LIMIT: usize = 16 * 1024;
@@ -25,6 +28,19 @@ struct Registration {
     repo: PathBuf,
     server: Option<PathBuf>,
     address: SocketAddr,
+}
+
+impl Registration {
+    fn publish(&self, dir: &Path) -> Result<tempfile::NamedTempFile> {
+        let mut staging =
+            tempfile::Builder::new().prefix(".staging-").rand_bytes(32).tempfile_in(dir)?;
+        serde_json::to_writer(staging.as_file_mut(), self)?;
+        staging.as_file_mut().flush()?;
+        let random = staging.path().file_name().context("registration name")?.to_string_lossy();
+        let path = dir.join(format!("launch-{}.json", random.trim_start_matches(".staging-")));
+        let file = staging.persist_noclobber(&path)?;
+        Ok(tempfile::NamedTempFile::from_parts(file, tempfile::TempPath::try_from_path(path)?))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,36 +94,123 @@ impl Pending {
         Instant::now() >= self.deadline
     }
 
-    pub(crate) fn apply(self, app: &mut App) -> bool {
-        let reply = if self.expired() {
+    fn refusal(&self, app: &App) -> Option<Reply> {
+        if self.expired() {
             if self.wants_focus() {
-                Reply::Refused("file request expired; no navigation performed".into())
+                Some(Reply::Refused("file request expired; no navigation performed".into()))
             } else {
-                Reply::Unknown
+                Some(Reply::Unknown)
             }
         } else if app.repo.canonicalize().ok().as_ref() != Some(&self.repo) {
-            Reply::Refused("review checkout changed".into())
+            Some(Reply::Refused("review checkout changed".into()))
+        } else if let Action::Focus { expected, .. } = &self.action
+            && *expected != Identity::of(app)
+        {
+            Some(Reply::Refused("review pane moved; run the command again".into()))
         } else {
-            match self.action {
-                Action::Identify => Reply::Identified {
+            None
+        }
+    }
+
+    /// Identify at once, or capture a pick without changing the view and hand it to the worker.
+    pub(crate) fn dispatch(self, app: &App, input_epoch: u64, tx: &mpsc::Sender<FocusJob>) -> bool {
+        if let Some(reply) = self.refusal(app) {
+            self.answer(reply);
+            return false;
+        }
+        match &self.action {
+            Action::Identify => {
+                let reply = Reply::Identified {
                     identity: Identity::of(app),
                     lease_ms: (self.epoch.elapsed() + BOUND).as_millis() as u64,
-                },
-                Action::Focus { expected, path, .. } => {
-                    if expected != Identity::of(app) {
-                        Reply::Refused("review pane moved; run the command again".into())
-                    } else if let Err(error) = app.focus_file(&path) {
-                        Reply::Refused(error.to_string())
+                };
+                self.answer(reply);
+                false
+            }
+            Action::Focus { path, .. } => match app.prepare_focus_file(path) {
+                Ok(input) => {
+                    if let Err(error) = tx.send(FocusJob { pending: self, input, input_epoch }) {
+                        error
+                            .0
+                            .pending
+                            .answer(Reply::Refused("file preparation unavailable".into()));
+                        false
                     } else {
-                        Reply::Applied
+                        true
                     }
                 }
-            }
-        };
+                Err(error) => {
+                    self.answer(Reply::Refused(error.to_string()));
+                    false
+                }
+            },
+        }
+    }
+
+    fn answer(self, reply: Reply) -> bool {
         let applied = matches!(reply, Reply::Applied);
         let _ = self.answer.send(reply);
         applied
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct FocusJob {
+    pending: Pending,
+    input: FocusFileInput,
+    input_epoch: u64,
+}
+
+impl FocusJob {
+    fn build(self) -> FocusCompletion {
+        let result = if self.pending.expired() {
+            Err(anyhow::anyhow!("file request expired; no navigation performed"))
+        } else {
+            self.input.build()
+        };
+        FocusCompletion { pending: self.pending, input_epoch: self.input_epoch, result }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FocusCompletion {
+    pending: Pending,
+    input_epoch: u64,
+    result: Result<PreparedFocusFile>,
+}
+
+impl FocusCompletion {
+    pub(crate) fn expired(&self) -> bool {
+        self.pending.expired()
+    }
+
+    pub(crate) fn apply(self, app: &mut App, input_epoch: u64) -> bool {
+        let reply = if let Some(reply) = self.pending.refusal(app) {
+            reply
+        } else if self.input_epoch != input_epoch {
+            Reply::Refused("review input changed while preparing file navigation".into())
+        } else {
+            match self.result.and_then(|prepared| app.focus_file(prepared)) {
+                Ok(()) => Reply::Applied,
+                Err(error) => Reply::Refused(error.to_string()),
+            }
+        };
+        self.pending.answer(reply)
+    }
+}
+
+/// One sleeping preparation worker; slow git never holds the listener or the frame loop.
+pub(crate) fn prepare(
+    rx: mpsc::Receiver<FocusJob>,
+    tx: wake::Sender<FocusCompletion>,
+) -> std::io::Result<JoinHandle<()>> {
+    thread::Builder::new().name("file-prepare".into()).spawn(move || {
+        while let Ok(job) = rx.recv() {
+            if tx.send(job.build()).is_err() {
+                break;
+            }
+        }
+    })
 }
 
 /// One launch's registration and sleeping listener; never polls or starts an idle process.
@@ -135,13 +238,7 @@ impl Listener {
         let address = listener.local_addr()?;
         let repo = repo.canonicalize()?;
         let registration_data = Registration { repo: repo.clone(), server, address };
-        let mut registration = tempfile::Builder::new()
-            .prefix("launch-")
-            .suffix(".json")
-            .rand_bytes(32)
-            .tempfile_in(dir)?;
-        serde_json::to_writer(registration.as_file_mut(), &registration_data)?;
-        registration.as_file_mut().flush()?;
+        let registration = registration_data.publish(dir)?;
         let token = registration
             .path()
             .file_name()
@@ -300,7 +397,26 @@ fn relative_path(repo: &Path, cwd: &Path, path: &Path) -> Result<String> {
             other => normalized.push(other.as_os_str()),
         }
     }
-    let relative = normalized.strip_prefix(repo).context("file is outside the checkout")?;
+    let mut ancestor = normalized.parent().context("expected a file path")?.to_owned();
+    let mut suffix = vec![normalized.file_name().context("expected a file path")?.to_owned()];
+    let resolved = loop {
+        match ancestor.canonicalize() {
+            Ok(mut parent) => {
+                ensure!(parent.is_dir(), "file parent is not a directory");
+                for name in suffix.iter().rev() {
+                    parent.push(name);
+                }
+                break parent;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                suffix
+                    .push(ancestor.file_name().context("file is outside the checkout")?.to_owned());
+                ensure!(ancestor.pop(), "file is outside the checkout");
+            }
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let relative = resolved.strip_prefix(repo).context("file is outside the checkout")?;
     ensure!(!relative.as_os_str().is_empty(), "expected a file, not the checkout root");
     relative
         .components()
@@ -444,16 +560,29 @@ mod tests {
             .unwrap();
         let mut app = app(repo.path());
         let root = app.repo.clone();
+        let (job_tx, job_rx) = mpsc::channel();
+        let (done_tx, done_rx) = wake::channel(&wake::Waker::detached());
+        let _worker = prepare(job_rx, done_tx).unwrap();
         thread::scope(|scope| {
             let client =
                 scope.spawn(|| focus_in(&cache.path().join("control"), &root, None, None, "b.rs"));
             let identify = rx.recv_timeout(BOUND).unwrap();
             assert!(!identify.wants_focus());
-            identify.apply(&mut app);
+            assert!(!identify.dispatch(&app, 0, &job_tx));
             let focus = rx.recv_timeout(BOUND).unwrap();
             assert!(focus.wants_focus());
             assert!(!client.is_finished(), "no applied acknowledgment before navigation");
-            assert!(focus.apply(&mut app));
+            let git_before = crate::git::GIT_COMMANDS.with(std::cell::Cell::get);
+            assert!(focus.dispatch(&app, 0, &job_tx));
+            assert_eq!(
+                crate::git::GIT_COMMANDS.with(std::cell::Cell::get),
+                git_before,
+                "capturing a pick must not run git on the frame thread"
+            );
+            assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
+            let completion = done_rx.recv_timeout(BOUND).unwrap();
+            assert!(!client.is_finished(), "preparation is not an applied acknowledgment");
+            assert!(completion.apply(&mut app, 0));
             client.join().unwrap().unwrap();
         });
         assert_eq!(app.current_entry().unwrap().path, "b.rs");
@@ -481,9 +610,14 @@ mod tests {
             let mut app = app(&root);
             app.herdr.ids =
                 PaneIds { workspace: Some(workspace.into()), pane: Some("review-pane".into()) };
+            let (job_tx, job_rx) = mpsc::channel();
+            let (done_tx, done_rx) = wake::channel(&wake::Waker::detached());
+            let _worker = prepare(job_rx, done_tx).unwrap();
             let handle = thread::spawn(move || {
                 while let Ok(request) = rx.recv() {
-                    request.apply(&mut app);
+                    if request.dispatch(&app, 0, &job_tx) {
+                        done_rx.recv_timeout(BOUND).unwrap().apply(&mut app, 0);
+                    }
                 }
                 app.diff_path.clone()
             });
@@ -516,6 +650,7 @@ mod tests {
         let repo = repo();
         let mut app = app(repo.path());
         let root = app.repo.clone();
+        let (job_tx, _job_rx) = mpsc::channel();
         let pending = |expected, deadline| {
             let (answer, rx) = mpsc::sync_channel(1);
             (
@@ -530,17 +665,17 @@ mod tests {
             )
         };
         let (expired, rx) = pending(Identity::of(&app), Instant::now());
-        assert!(!expired.apply(&mut app));
+        assert!(!expired.dispatch(&app, 0, &job_tx));
         assert!(matches!(rx.recv().unwrap(), Reply::Refused(why) if why.contains("expired")));
         let (moved, rx) = pending(
             Identity { workspace: Some("previous".into()), pane: None },
             Instant::now() + BOUND,
         );
-        assert!(!moved.apply(&mut app));
+        assert!(!moved.dispatch(&app, 0, &job_tx));
         assert!(matches!(rx.recv().unwrap(), Reply::Refused(why) if why.contains("moved")));
         let (blocked, rx) = pending(Identity::of(&app), Instant::now() + BOUND);
         app.set_config_error("bad config".into());
-        assert!(!blocked.apply(&mut app));
+        assert!(!blocked.dispatch(&app, 0, &job_tx));
         assert!(matches!(rx.recv().unwrap(), Reply::Refused(why) if why.contains("config")));
         assert_eq!(app.tab, Tab::Changes);
         assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
@@ -557,10 +692,11 @@ mod tests {
         let error =
             focus_in(&dir, &repo.path().canonicalize().unwrap(), None, None, "b.rs").unwrap_err();
         assert!(error.to_string().contains("unique target"));
-        let mut app = app(repo.path());
+        let app = app(repo.path());
         let queued = rx.recv_timeout(BOUND).unwrap();
         assert!(queued.expired());
-        assert!(!queued.apply(&mut app));
+        let (job_tx, _job_rx) = mpsc::channel();
+        assert!(!queued.dispatch(&app, 0, &job_tx));
         assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
     }
 
@@ -571,7 +707,7 @@ mod tests {
         let (tx, rx) = wake::channel(&wake::Waker::detached());
         let listener =
             Listener::in_dir(repo.path(), None, &cache.path().join("control"), tx).unwrap();
-        let mut app = app(repo.path());
+        let app = app(repo.path());
         let mut stream = TcpStream::connect(listener.address).unwrap();
         write_json(
             &mut stream,
@@ -602,12 +738,199 @@ mod tests {
         .unwrap();
         let pending = rx.recv_timeout(BOUND).unwrap();
         assert!(pending.expired(), "the lease cannot restart when the listener accepts");
-        assert!(!pending.apply(&mut app));
+        let (job_tx, _job_rx) = mpsc::channel();
+        assert!(!pending.dispatch(&app, 0, &job_tx));
         assert!(!matches!(
             read_json::<Reply>(&mut stream, Instant::now() + BOUND).unwrap(),
             Reply::Applied
         ));
         assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
+    }
+
+    #[test]
+    fn focus_control_prepared_pick_refuses_changed_owner_input_without_overwriting_place() {
+        let repo = repo();
+        let config_dir = tempfile::tempdir().unwrap();
+        fs::write(config_dir.path().join("config.toml"), "review_prefix = 'changed'\n").unwrap();
+        let changed_config = crate::config::plugin_config_in(config_dir.path()).unwrap();
+        for change in [
+            "expired",
+            "pane",
+            "repo",
+            "config",
+            "modal",
+            "selection",
+            "gesture",
+            "navigation",
+            "scope",
+            "tab",
+            "watch-worktree",
+            "watch-head",
+            "watch-refs",
+            "watch-rescan",
+            "watch-config",
+            "watch-ready",
+            "watch-unavailable",
+            "watch-empty",
+        ] {
+            fs::write(repo.path().join("b.rs"), "b\n").unwrap();
+            let mut app = app(repo.path());
+            let (answer, reply) = mpsc::sync_channel(1);
+            let pending = Pending {
+                action: Action::Focus {
+                    expected: Identity::of(&app),
+                    path: "b.rs".into(),
+                    lease_ms: 0,
+                },
+                repo: app.repo.clone(),
+                epoch: Instant::now(),
+                deadline: Instant::now() + BOUND,
+                answer,
+            };
+            let (job_tx, job_rx) = mpsc::channel();
+            assert!(pending.dispatch(&app, 7, &job_tx));
+            assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
+            assert!(reply.try_recv().is_err());
+            let mut completion = job_rx.recv().unwrap().build();
+            let mut input_epoch = 7;
+            match change {
+                "pane" => app.herdr.ids.workspace = Some("moved".into()),
+                "repo" => app.repo = config_dir.path().to_owned(),
+                "config" => app.set_plugin_config(changed_config.clone()),
+                "modal" => {
+                    app.focus = Focus::Diff;
+                    app.start_comment();
+                    app.input_push('x');
+                    assert!(app.composing());
+                }
+                "selection" => app.select_anchor = Some(0),
+                "gesture" => {
+                    app.start_gutter_drag(0);
+                    assert!(app.gesture_active());
+                }
+                "navigation" => {
+                    app.diff_scroll = 3;
+                    input_epoch += 1;
+                }
+                "scope" => app.scope = Scope::Branch,
+                "tab" => app.tab = Tab::Pr,
+                watch if watch.starts_with("watch-") => {
+                    use crate::watch::{Batch, GitChange, WatchEvent};
+                    let event = match watch {
+                        "watch-ready" => WatchEvent::Ready,
+                        "watch-unavailable" => WatchEvent::Unavailable("disconnected".into()),
+                        _ => {
+                            let mut batch = Batch::default();
+                            match watch {
+                                "watch-worktree" => {
+                                    batch.worktree.insert("b.rs".into());
+                                }
+                                "watch-head" => {
+                                    batch.git.insert(GitChange::Head);
+                                }
+                                "watch-refs" => {
+                                    batch.git.insert(GitChange::Refs);
+                                }
+                                "watch-rescan" => batch.rescan = true,
+                                "watch-config" => batch.config = true,
+                                "watch-empty" => {}
+                                _ => unreachable!(),
+                            }
+                            WatchEvent::Batch(batch)
+                        }
+                    };
+                    crate::land_watch_event(
+                        event,
+                        &app,
+                        &mut crate::schedule::Pacer::default(),
+                        &mut crate::PrCoordinator::new(false),
+                        None,
+                        &mut input_epoch,
+                    );
+                    if watch != "watch-empty" {
+                        fs::remove_file(repo.path().join("b.rs")).unwrap();
+                        app.reload().unwrap();
+                    }
+                }
+                _ => {}
+            }
+            // The owner is free to accept input before a queued build completes (Continuity).
+            if change == "expired" {
+                completion.pending.deadline = Instant::now();
+            }
+            if change == "watch-empty" {
+                assert!(completion.apply(&mut app, input_epoch));
+                assert!(matches!(reply.recv().unwrap(), Reply::Applied));
+                assert_eq!(app.diff_path.as_deref(), Some("b.rs"));
+                continue;
+            }
+            let place = (
+                app.tab,
+                app.scope,
+                app.diff_path.clone(),
+                app.diff_scroll,
+                app.mode.clone(),
+                app.input.clone(),
+            );
+            assert!(!completion.apply(&mut app, input_epoch), "{change}");
+            assert!(matches!(reply.recv().unwrap(), Reply::Refused(_)), "{change}");
+            assert_eq!(
+                (
+                    app.tab,
+                    app.scope,
+                    app.diff_path.clone(),
+                    app.diff_scroll,
+                    app.mode.clone(),
+                    app.input.clone()
+                ),
+                place,
+                "{change}"
+            );
+            if change.starts_with("watch-") {
+                assert_eq!(app.changed_count(), 1, "{change}");
+                assert!(!app.entries.iter().any(|entry| entry.path == "b.rs"), "{change}");
+            }
+        }
+    }
+
+    #[test]
+    fn focus_control_publishes_complete_private_registration_and_ignores_unpublished_staging() {
+        let repo = repo();
+        let root = repo.path().canonicalize().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        fs::write(cache.path().join(".staging-crashed"), "{\"repo\":").unwrap();
+        assert!(
+            focus_in(cache.path(), &root, None, None, "a.rs")
+                .unwrap_err()
+                .to_string()
+                .contains("no existing")
+        );
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let data = Registration {
+            repo: root.clone(),
+            server: None,
+            address: listener.local_addr().unwrap(),
+        };
+        let registration = data.publish(cache.path()).unwrap();
+        let path = registration.path().to_owned();
+        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("launch-"));
+        let published: Registration = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published.repo, root);
+        assert_eq!(published.address, listener.local_addr().unwrap());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        drop(registration);
+        assert!(!path.exists());
+        fs::write(cache.path().join("launch-malformed.json"), "{").unwrap();
+        assert!(
+            focus_in(cache.path(), &root, None, None, "a.rs")
+                .unwrap_err()
+                .to_string()
+                .contains("invalid control registration")
+        );
     }
 
     #[test]
@@ -619,8 +942,27 @@ mod tests {
         assert!(relative_path(&root, &root, Path::new("../outside.rs")).is_err());
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/outside", root.join("link.rs")).unwrap();
-            assert_eq!(relative_path(&root, &root, Path::new("link.rs")).unwrap(), "link.rs");
+            let aliases = tempfile::tempdir().unwrap();
+            let alias = aliases.path().join("checkout");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            assert_eq!(relative_path(&root, &root, &alias.join("a.rs")).unwrap(), "a.rs");
+            fs::write(root.join("deleted.rs"), "deleted").unwrap();
+            fs::remove_file(root.join("deleted.rs")).unwrap();
+            assert_eq!(
+                relative_path(&root, &root, &alias.join("deleted.rs")).unwrap(),
+                "deleted.rs"
+            );
+            assert_eq!(
+                relative_path(&root, &root, &alias.join("gone/deleted.rs")).unwrap(),
+                "gone/deleted.rs"
+            );
+            fs::write(aliases.path().join("outside.rs"), "outside").unwrap();
+            std::os::unix::fs::symlink(aliases.path().join("outside.rs"), root.join("link.rs"))
+                .unwrap();
+            assert_eq!(relative_path(&root, &root, &alias.join("link.rs")).unwrap(), "link.rs");
+            std::os::unix::fs::symlink(aliases.path(), root.join("escape")).unwrap();
+            assert!(relative_path(&root, &root, &alias.join("escape/outside.rs")).is_err());
+            assert!(relative_path(&root, &root, &alias.join("../outside.rs")).is_err());
         }
     }
 }

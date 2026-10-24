@@ -66,6 +66,32 @@ fn edited_repo() -> Repo {
     r
 }
 
+fn focus_file(app: &mut App, path: &str) -> Result<()> {
+    let input = app.prepare_focus_file(path)?;
+    let prepared = std::thread::spawn(move || input.build()).join().unwrap()?;
+    app.focus_file(prepared)
+}
+
+#[test]
+fn external_focus_uses_fresh_changes_membership_without_reloading_or_mutating_during_preparation() {
+    let r = edited_repo();
+    r.write("previously-unchanged.rs", "old\n");
+    r.commit_all("tracked");
+    r.write("a.rs", "still changed\n");
+    let mut app = app_on(&r);
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
+    r.write("previously-unchanged.rs", "new\n");
+    let input = app.prepare_focus_file("previously-unchanged.rs").unwrap();
+    let prepared = std::thread::spawn(move || input.build()).join().unwrap().unwrap();
+    assert_eq!(app.diff_path.as_deref(), Some("a.rs"));
+    assert!(!app.entries.iter().any(|e| e.path == "previously-unchanged.rs"));
+    app.focus_file(prepared).unwrap();
+    assert_eq!(app.tab, herdr_reviewr::app::Tab::Changes);
+    assert_eq!(app.current_entry().unwrap().path, "previously-unchanged.rs");
+    assert_eq!(app.diff_path.as_deref(), Some("previously-unchanged.rs"));
+    assert!(app.diff.rows.iter().any(|row| matches!(row, Row::Insertion { .. })));
+}
+
 #[test]
 fn external_focus_reveals_changes_and_falls_back_to_ignored_all_files_without_losing_comments() {
     let r = Repo::init();
@@ -78,14 +104,14 @@ fn external_focus_reveals_changes_and_falls_back_to_ignored_all_files_without_lo
     std::fs::remove_file(r.path().join("src/deleted.rs")).unwrap();
     r.write("build/nested/output.rs", "ignored\n");
     let mut app = app_on(&r);
-    app.focus_file("src/a.rs").unwrap();
+    focus_file(&mut app, "src/a.rs").unwrap();
     comment_on(&mut app, '+', "keep me");
     app.focus = Focus::Files;
     app.file_cursor = app.file_rows.iter().position(|row| row.dir_path() == Some("src")).unwrap();
     app.collapse_dir();
     app.navigator_hidden = true;
 
-    app.focus_file("src/deleted.rs").unwrap();
+    focus_file(&mut app, "src/deleted.rs").unwrap();
     assert_eq!(app.tab, herdr_reviewr::app::Tab::Changes);
     assert_eq!(app.current_entry().unwrap().path, "src/deleted.rs");
     assert_eq!(app.diff_path.as_deref(), Some("src/deleted.rs"));
@@ -93,7 +119,7 @@ fn external_focus_reveals_changes_and_falls_back_to_ignored_all_files_without_lo
     assert!(!app.navigator_hidden);
     assert!(app.reveal_files);
 
-    app.focus_file("build/nested/output.rs").unwrap();
+    focus_file(&mut app, "build/nested/output.rs").unwrap();
     assert_eq!(app.tab, herdr_reviewr::app::Tab::AllFiles);
     assert_eq!(app.current_entry().unwrap().path, "build/nested/output.rs");
     assert_eq!(app.diff_path.as_deref(), Some("build/nested/output.rs"));
@@ -101,7 +127,7 @@ fn external_focus_reveals_changes_and_falls_back_to_ignored_all_files_without_lo
     assert_eq!(app.store.len(), 1);
     assert_eq!(app.store.get(0).unwrap().text, "keep me");
     app.set_tab(herdr_reviewr::app::Tab::Pr).unwrap();
-    app.focus_file("unchanged.rs").unwrap();
+    focus_file(&mut app, "unchanged.rs").unwrap();
     assert_eq!(app.diff_path.as_deref(), Some("unchanged.rs"));
     assert!(
         app.file_rows.iter().any(|row| {
@@ -117,23 +143,23 @@ fn external_focus_refuses_invalid_paths_and_covered_drafts_without_changing_plac
     let r = edited_repo();
     r.write("b.rs", "other\n");
     let mut app = app_on(&r);
-    app.focus_file("a.rs").unwrap();
+    focus_file(&mut app, "a.rs").unwrap();
     let place = (app.tab, app.file_cursor, app.diff_path.clone(), app.navigator_hidden);
-    assert!(app.focus_file("missing.rs").is_err());
-    assert!(app.focus_file("../outside.rs").is_err());
+    assert!(focus_file(&mut app, "missing.rs").is_err());
+    assert!(focus_file(&mut app, "../outside.rs").is_err());
     assert_eq!((app.tab, app.file_cursor, app.diff_path.clone(), app.navigator_hidden), place);
     app.focus = Focus::Diff;
     app.start_comment();
     typed(&mut app, "unfinished");
     app.picker_over = app.mode.clone();
     app.mode = Mode::Picker;
-    assert!(app.focus_file("b.rs").is_err());
+    assert!(focus_file(&mut app, "b.rs").is_err());
     assert_eq!(app.input, "unfinished");
     assert!(matches!(app.picker_over, Mode::Composing { .. }));
     assert_eq!((app.tab, app.file_cursor, app.diff_path.clone(), app.navigator_hidden), place);
     app.close_picker();
     app.cancel_comment();
-    app.focus_file("b.rs").unwrap();
+    focus_file(&mut app, "b.rs").unwrap();
     assert_eq!(app.current_entry().unwrap().path, "b.rs");
 }
 

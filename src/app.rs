@@ -83,6 +83,66 @@ impl Tab {
     }
 }
 
+/// A file pick's immutable input, captured without changing the painted view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FocusFileInput {
+    world: crate::world::WorldInput,
+    all_dirs: HashSet<String>,
+    config: crate::config::PluginConfig,
+    path: String,
+}
+
+/// Fresh scope membership and tree data, prepared off the frame loop.
+#[derive(Debug)]
+pub struct PreparedFocusFile {
+    input: FocusFileInput,
+    tab: Tab,
+    dirs: HashSet<String>,
+    snapshot: crate::world::WorldSnapshot,
+}
+
+impl FocusFileInput {
+    /// Read the fresh scope and, only for a fallback, the expanded All files tree on a worker.
+    pub fn build(self) -> Result<PreparedFocusFile> {
+        let mut world = self.world.clone();
+        world.tab = Tab::Changes;
+        let mut snapshot = crate::world::build(&world)?;
+        let tab = if self.world.tab == Tab::Changes
+            && snapshot.changeset.files.contains_key(&self.path)
+        {
+            Tab::Changes
+        } else {
+            Tab::AllFiles
+        };
+        let mut dirs = if tab == Tab::Changes {
+            self.world.toggled_dirs.clone()
+        } else {
+            self.all_dirs.clone()
+        };
+        let mut dir = self.path.as_str();
+        while let Some((parent, _)) = dir.rsplit_once('/') {
+            if tab == Tab::Changes {
+                dirs.remove(parent);
+            } else {
+                dirs.insert(parent.to_owned());
+            }
+            dir = parent;
+        }
+        if tab == Tab::AllFiles {
+            world.tab = tab;
+            world.toggled_dirs.clone_from(&dirs);
+            snapshot.entries = crate::world::all_files_entries(&world, &snapshot.changeset.files)?;
+            anyhow::ensure!(
+                world.repo.join(&self.path).is_file()
+                    && snapshot.entries.iter().any(|e| e.path == self.path && !e.is_dir),
+                "file is not in All files: {}",
+                self.path
+            );
+        }
+        Ok(PreparedFocusFile { input: self, tab, dirs, snapshot })
+    }
+}
+
 /// The inactive file tab's place state, swapped in on a switch.
 #[derive(Debug, Default)]
 struct TabStash {
@@ -3256,8 +3316,7 @@ impl App {
         Ok(())
     }
 
-    /// An external author's explicit file pick; never dismiss authored input (Comments survive).
-    pub fn focus_file(&mut self, path: &str) -> Result<()> {
+    fn ensure_focus_file_ready(&self) -> Result<()> {
         self.ensure_config_ready()?;
         anyhow::ensure!(
             self.mode == Mode::Normal
@@ -3266,47 +3325,60 @@ impl App {
                 && !self.confirming_quit,
             "finish the active draft, overlay, or selection before focusing a file"
         );
-        let changes = self.tab == Tab::Changes && self.changeset.files.contains_key(path);
-        let mut parents = Vec::new();
-        let mut dir = path;
-        while let Some((parent, _)) = dir.rsplit_once('/') {
-            parents.push(parent);
-            dir = parent;
-        }
-        let entries = if changes {
-            None
-        } else {
-            let mut input = self.world_input();
-            input.tab = Tab::AllFiles;
-            input.toggled_dirs.clone_from(if self.active_file_tab == Tab::AllFiles {
+        Ok(())
+    }
+
+    /// Capture an external author's file pick without scans, tab switches, or draft mutation.
+    pub fn prepare_focus_file(&self, path: &str) -> Result<FocusFileInput> {
+        self.ensure_focus_file_ready()?;
+        let mut world = self.world_input();
+        world.toggled_dirs.clone_from(&self.toggled_dirs);
+        Ok(FocusFileInput {
+            world,
+            all_dirs: if self.active_file_tab == Tab::AllFiles {
                 &self.toggled_dirs
             } else {
                 &self.stash.toggled_dirs
-            });
-            input.toggled_dirs.extend(parents.iter().map(|p| (*p).to_owned()));
-            let entries = crate::world::all_files_entries(&input, &self.changeset.files)?;
-            anyhow::ensure!(
-                self.repo.join(path).is_file()
-                    && entries.iter().any(|e| e.path == path && !e.is_dir),
-                "file is not in All files: {path}"
-            );
-            Some(entries)
-        };
-        if !changes {
-            self.set_tab(Tab::AllFiles)?;
+            }
+            .clone(),
+            config: self.plugin_config().expect("ready config").clone(),
+            path: path.to_owned(),
+        })
+    }
+
+    /// Land an explicit pick using prepared data only; saved comments stay intact (Comments survive).
+    pub fn focus_file(&mut self, prepared: PreparedFocusFile) -> Result<()> {
+        anyhow::ensure!(
+            self.prepare_focus_file(&prepared.input.path)? == prepared.input,
+            "review input changed while preparing file navigation"
+        );
+        if self.tab != prepared.tab {
+            self.switch_line = None;
+            self.tab = prepared.tab;
+            if self.active_file_tab != self.tab {
+                self.swap_active_with_stash();
+                self.active_file_tab = self.tab;
+            }
         }
-        for parent in parents {
-            self.set_dir_expanded(parent, true);
-        }
-        if let Some(entries) = entries {
-            self.entries = entries;
-        }
+        self.toggled_dirs = prepared.dirs;
+        self.changeset = prepared.snapshot.changeset;
+        self.entries = prepared.snapshot.entries;
+        self.adopt_branch_base(prepared.snapshot.branch_base);
+        self.adopt_pick_status(prepared.snapshot.pick_status);
+        let path = prepared.input.path;
         self.rebuild_file_rows();
         let row = self
-            .file_row_of_path(path)
+            .file_row_of_path(&path)
             .ok_or_else(|| anyhow::anyhow!("file is not visible: {path}"))?;
+        self.file_cursor = row;
+        if self.diff_path.as_deref() != Some(&path) {
+            self.reset_diff_view();
+        }
+        self.open_path_in_tab(path);
+        self.tab_visited = true;
         self.navigator_hidden = false;
-        self.select_file(row)?;
+        self.focus = Focus::Files;
+        self.reveal_files = true;
         Ok(())
     }
 
