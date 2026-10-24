@@ -4314,13 +4314,18 @@ fn selectable_row(
 
 // --- PR tab --------------------------------
 
-/// The `PR` tab's header: tabs, then the title and a clickable `status #number ↗` chip.
+/// The `PR` tab's header: tabs, then the title and a terminal-linked `status #number ↗` chip.
 fn render_pr_header(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(Paragraph::new(pr_header_line(app, area).0), area);
+}
+
+fn pr_header_line(app: &App, area: Rect) -> (Line<'static>, Option<Rect>) {
     let p = app.palette();
     let bar = Style::default().bg(p.fill(Fill::Bar));
     let mut spans = tab_bar_spans(app);
     let lead_tabs: usize = spans.iter().map(Span::width).sum();
     let w = area.width as usize;
+    let mut chip = None;
 
     // No PR: the read pane alone says why.
     if let forge::PrView::Pr(s) = &app.pr {
@@ -4348,6 +4353,10 @@ fn render_pr_header(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(head, bar.fg(p.ink(Ink::TextMuted, Fill::Bar))));
         }
         spans.push(Span::styled("  ", bar));
+        let start: usize = spans.iter().map(Span::width).sum();
+        if start < w && area.height > 0 {
+            chip = Some(Rect::new(area.x + start as u16, area.y, chip_w.min(w - start) as u16, 1));
+        }
         spans.push(Span::styled(status, bar.fg(color).add_modifier(Modifier::BOLD)));
         spans.push(Span::styled(" ", bar));
         spans.push(Span::styled(
@@ -4363,7 +4372,19 @@ fn render_pr_header(frame: &mut Frame, app: &App, area: Rect) {
     if used < w {
         spans.push(Span::styled(" ".repeat(w - used), bar));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    (Line::from(spans), chip)
+}
+
+/// The visible chip's safe URL; modal and blocked screens must not expose links behind them.
+pub(crate) fn pr_header_link(area: Rect, app: &App) -> Option<(Rect, &str)> {
+    if app.tab != Tab::Pr
+        || app.config_error().is_some()
+        || matches!(app.mode, Mode::List | Mode::Picker | Mode::BasePick | Mode::CommitPick)
+    {
+        return None;
+    }
+    let url = crate::browser::openable_url(&app.pr_snapshot()?.url).ok()?;
+    Some((pr_header_line(app, panes(area, app).tab).1?, url))
 }
 
 /// The status chip word for a PR's lifecycle; its accent comes from [`pr_status_chip`].
@@ -4908,15 +4929,9 @@ fn pr_empty_msg(
 /// Whether a click lands on the header's PR chip.
 #[must_use]
 pub fn hit_pr_open(area: Rect, app: &App, col: u16, row: u16) -> bool {
-    let Some(s) = app.pr_snapshot() else {
-        return false;
-    };
-    if row != area.y {
-        return false;
-    }
-    let chip_w = pr_chip_width(app, s) as u16;
-    // The chip occupies the last `chip_w` columns; `saturating_sub` keeps the bound overflow-free.
-    col >= area.width.saturating_sub(chip_w) && col < area.width
+    pr_header_line(app, panes(area, app).tab)
+        .1
+        .is_some_and(|chip| chip.contains(Position::new(col, row)))
 }
 
 /// The cursor index a PR navigator row selects.

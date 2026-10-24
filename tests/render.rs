@@ -993,6 +993,49 @@ fn pr_header_names_the_resolved_branch_and_marks_a_fork() {
 }
 
 #[test]
+fn pr_chip_clicks_never_run_the_host_opener_even_if_control_click_reaches_reviewr() {
+    use herdr_reviewr::forge::{PrSnapshot, PrView};
+    use ratatui::crossterm::event::MouseButton;
+
+    let r = Repo::init();
+    r.write("x.rs", "y\n");
+    r.commit_all("init");
+    let mut app = app_on(&r);
+    app.set_tab(Tab::Pr).unwrap();
+    app.pr = PrView::Pr(Box::new(PrSnapshot {
+        url: "https://example.test/pull/7".into(),
+        ..common::pr_snapshot()
+    }));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config.toml"), "url_opener = \"reviewr-no-such-opener\"\n")
+        .unwrap();
+    app.set_plugin_config(herdr_reviewr::config::plugin_config_in(dir.path()).unwrap());
+    let area = Rect::new(0, 0, 80, 12);
+    let keymap = app.keymap().clone();
+    for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
+        for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)]
+        {
+            handle_mouse(
+                &mut app,
+                MouseEvent { kind, column: 79, row: 0, modifiers },
+                area,
+                &[],
+                &keymap,
+                &herdr_reviewr::export::Clipboard,
+            )
+            .unwrap();
+        }
+        assert!(app.status.contains("Control-click in herdr"), "{}", app.status);
+    }
+    handle_key(&mut app, KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), area, &keymap)
+        .unwrap();
+    assert_eq!(
+        app.status, "`url_opener` not found: reviewr-no-such-opener",
+        "o retains the explicit opener fallback"
+    );
+}
+
+#[test]
 fn pr_empty_states_are_calm() {
     use herdr_reviewr::app::Tab;
     use herdr_reviewr::forge::PrView;
