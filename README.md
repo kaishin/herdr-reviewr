@@ -283,7 +283,12 @@ open at the right line. A terminal editor takes the pane until you quit. For any
 
 ### URL opener
 
-Links open with `open`, `xdg-open`, or the Windows default browser. Under `herdr --remote`, set
+Control-click the top-right PR chip in Herdr to open it in the viewing machine's browser,
+including through `herdr machine`. Standalone terminals use their own hyperlink shortcut.
+Clicking the chip without that shortcut only shows a hint; it never starts a browser on the host.
+
+Keyboard `o` and links clicked inside reviewr use `url_opener`, or `open`, `xdg-open`, or the
+Windows default browser on the machine running reviewr. Under `herdr --remote`, set
 `url_opener` to something that reaches your browser. The URL is passed as one argument, never
 through a shell, so don't use `ssh host open {url}`.
 

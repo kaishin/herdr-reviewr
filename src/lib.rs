@@ -16,6 +16,7 @@ pub mod gitlab;
 pub mod herdr;
 pub mod herdr_socket;
 pub mod highlight;
+mod hyperlink;
 mod input;
 pub mod keymap;
 #[macro_use]
@@ -824,6 +825,7 @@ fn glyph_clears(lit_for: Duration) -> bool {
 
 /// Draw, then sleep until input, a worker's result, or the nearest armed deadline.
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Result<()> {
+    let mut pr_hyperlink = hyperlink::PrHyperlink::default();
     // The config is read at the first frame and again only when the watcher says it changed.
     let mut config_dirty = true;
     // When the last mouse event came, and whether it sat on the pane's edge.
@@ -1006,7 +1008,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                 if std::mem::take(&mut repaint_whole) {
                     invalidate_screen(terminal)?;
                 }
-                terminal.draw(|f| age_due = ui::render_frame(f, app))?;
+                age_due = pr_hyperlink.draw(terminal, app)?;
             }
             let age_due = age_due.map(|due| Instant::now() + due);
 
@@ -2632,7 +2634,10 @@ fn dispatch_mouse(
                 {
                     app.set_tab(tab)?;
                 } else if ui::hit_pr_open(area, app, m.column, m.row) {
-                    app.pr_open();
+                    app.status = format!(
+                        "use the terminal link shortcut (Control-click in herdr); {} uses the configured or host opener",
+                        keymap.hint(crate::keymap::Action::OpenPr).label(),
+                    );
                 } else if handle_text_down(app, m, area) {
                     // Armed; the release performs it.
                 } else if ui::in_files_pane(area, app, m.column, m.row) {
