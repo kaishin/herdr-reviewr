@@ -590,10 +590,13 @@ fn a_review_ui_started_with_ui_flags_still_counts() {
 fn a_flag_run_never_counts_as_the_review_ui() {
     let dir = tempfile::tempdir().unwrap();
     // A non-UI flag run is not the review UI, so `open` opens over it.
-    let flag_runs: [&[&str]; 3] = [
+    let flag_runs: [&[&str]; 6] = [
         &["herdr-reviewr", "--action", "toggle"],
         &["herdr-reviewr", "/repo", "--action"],
         &["herdr-reviewr", "--mark-reviewed", "a.rs"],
+        &["herdr-reviewr", "--focus-file", "a.rs"],
+        &["herdr-reviewr", "--focus-file"],
+        &["herdr-reviewr", "--focus-file=a.rs"],
     ];
     for argv in flag_runs {
         reset(dir.path());

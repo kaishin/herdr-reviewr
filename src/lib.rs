@@ -5,6 +5,7 @@ pub mod app;
 pub mod azure_devops;
 pub mod browser;
 pub mod config;
+pub mod control;
 pub mod diff;
 pub mod editor;
 pub mod export;
@@ -713,8 +714,12 @@ fn land_watch_event(
     pacer: &mut crate::schedule::Pacer,
     pr: &mut PrCoordinator,
     search: Option<&mpsc::Sender<crate::search::SearchJob>>,
+    control_input_epoch: &mut u64,
 ) -> bool {
     use crate::watch::WatchEvent;
+    if !matches!(&event, WatchEvent::Batch(batch) if batch.is_empty()) {
+        *control_input_epoch = control_input_epoch.wrapping_add(1);
+    }
     let now = Instant::now();
     match event {
         // Whatever changed before the stream went live was never seen: catch up once.
@@ -831,6 +836,16 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
     #[cfg(unix)]
     wake.sys().watch_resizes()?;
     let waker = wake.waker();
+    let (control_tx, control_rx) = crate::wake::channel(&waker);
+    let (focus_job_tx, focus_job_rx) = mpsc::channel();
+    let (focus_tx, focus_rx) = crate::wake::channel(&waker);
+    let _focus_worker = crate::control::prepare(focus_job_rx, focus_tx)?;
+    let mut control_input_epoch = 0_u64;
+    let mut control_jobs = 0_usize;
+    let mut control_started: Option<Instant> = None;
+    let _control = crate::control::Listener::start(&app.repo, control_tx)
+        .inspect_err(|error| logln!("file control unavailable: {error}"))
+        .ok();
     // Probes and forge reads run on workers.
     let (probe_tx, probe_rx) = crate::wake::channel::<(
         u64,
@@ -893,6 +908,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                     let now = config::plugin_config(cfg.plugin_config_dir.as_deref());
                     match recovery_verdict(&target, now) {
                         Recovery::Swap => {
+                            control_input_epoch = control_input_epoch.wrapping_add(1);
                             recovered.carry_authored_state_from(app);
                             *app = recovered;
                             pr.recover();
@@ -933,11 +949,12 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
             if std::mem::take(&mut app.refresh_commanded) {
                 glyph_since.get_or_insert_with(Instant::now);
             }
-            let glyph_due = if app.tab == crate::app::Tab::Pr {
-                app.pr_refreshing()
-            } else {
-                world_indicator(world_live.running.map(|at| (at.elapsed(), world_live.builds)))
-            };
+            let glyph_due = control_started.is_some_and(|at| at.elapsed() >= INDICATOR_DELAY)
+                || if app.tab == crate::app::Tab::Pr {
+                    app.pr_refreshing()
+                } else {
+                    world_indicator(world_live.running.map(|at| (at.elapsed(), world_live.builds)))
+                };
             let mut glyph_wake = None;
             if glyph_due {
                 glyph_since.get_or_insert_with(Instant::now);
@@ -1053,7 +1070,15 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
 
             while let Ok(event) = watch_rx.try_recv() {
                 let search = search_worker.as_ref().map(|(tx, _)| tx);
-                config_dirty |= land_watch_event(event, app, &mut pacer, &mut pr, search);
+                let changed_config = land_watch_event(
+                    event,
+                    app,
+                    &mut pacer,
+                    &mut pr,
+                    search,
+                    &mut control_input_epoch,
+                );
+                config_dirty |= changed_config;
             }
             let mut heard = false;
             let mut moved = shown_by_input.take();
@@ -1075,10 +1100,55 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                 pacer.set_visible(visible);
                 watch.set_visible(visible);
             }
+            let mut controlled = false;
+            while let Ok(request) = control_rx.try_recv() {
+                if request.wants_focus() && !request.expired() {
+                    reconcile_plugin_config(
+                        app,
+                        cfg,
+                        area,
+                        &mut config_epoch,
+                        &recovery_tx,
+                        &mut recovery_inflight,
+                        &mut pr,
+                    );
+                }
+                if request.dispatch(app, control_input_epoch, &focus_job_tx) {
+                    control_jobs += 1;
+                    control_started.get_or_insert_with(Instant::now);
+                    controlled = true;
+                }
+            }
+            while let Ok(completion) = focus_rx.try_recv() {
+                if !completion.expired() {
+                    reconcile_plugin_config(
+                        app,
+                        cfg,
+                        area,
+                        &mut config_epoch,
+                        &recovery_tx,
+                        &mut recovery_inflight,
+                        &mut pr,
+                    );
+                }
+                if completion.apply(app, control_input_epoch) {
+                    control_input_epoch = control_input_epoch.wrapping_add(1);
+                    // An older world build cannot replace the pick's freshly prepared scope.
+                    world_live.generation = world_live.generation.wrapping_add(1);
+                    world_live.running = None;
+                    world_live.full = false;
+                    world_live.reveal = false;
+                }
+                control_jobs -= 1;
+                if control_jobs == 0 {
+                    control_started = None;
+                }
+                controlled = true;
+            }
             // What the screen shows beyond the watcher's defaults: ignored entries, a local base.
             watch.show(app.shown_ignored());
             watch.set_refs(app.watched_refs());
-            if heard {
+            if heard || controlled {
                 continue;
             }
 
@@ -1310,6 +1380,12 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                     timeout = timeout.min(left);
                 }
             }
+            if let Some(started) = control_started {
+                let left = INDICATOR_DELAY.saturating_sub(started.elapsed());
+                if !left.is_zero() {
+                    timeout = timeout.min(left);
+                }
+            }
             if let Some(wake) = glyph_wake {
                 timeout = timeout.min(wake.max(Duration::from_millis(15)));
             }
@@ -1352,6 +1428,9 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, cfg: &Config) -> Re
                     continue;
                 }
                 repaint_whole |= matches!(event, Event::Resize(..));
+                if !matches!(event, Event::Mouse(m) if m.kind == MouseEventKind::Moved) {
+                    control_input_epoch = control_input_epoch.wrapping_add(1);
+                }
                 if app.config_error().is_some() {
                     handle_blocked_event(app, &event);
                     continue;

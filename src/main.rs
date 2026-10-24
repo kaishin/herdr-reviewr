@@ -12,6 +12,15 @@ fn main() -> anyhow::Result<()> {
             println!("reviewr: marked {n} {noun} reviewed");
             Ok(())
         }
+        Some(NonUiRun::FocusFile(args)) => {
+            anyhow::ensure!(
+                args.len() == 2 && args[0] == "--focus-file",
+                "usage: herdr-reviewr --focus-file <file>"
+            );
+            herdr_reviewr::control::focus_file(std::path::Path::new(&args[1]))?;
+            println!("reviewr: focused {}", args[1].to_string_lossy());
+            Ok(())
+        }
         None => herdr_reviewr::run(),
     }
 }
